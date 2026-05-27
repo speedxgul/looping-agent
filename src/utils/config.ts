@@ -1,0 +1,129 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import type { AppConfig, NetworkName } from '../types.js';
+
+const DEFAULT_ENV_PATH = path.resolve(process.cwd(), '.env');
+
+export function loadConfig(): AppConfig {
+  loadDotEnv(DEFAULT_ENV_PATH);
+
+  return {
+    runtime: {
+      dryRun: readBoolean('DRY_RUN', true),
+      nodeEnv: readString('NODE_ENV', 'development'),
+      autonomyIntervalMs: readNumber('AUTONOMY_INTERVAL_MS', 900000)
+    },
+    logLevel: readString('LOG_LEVEL', 'info'),
+    agent: {
+      name: readString('AGENT_NAME', 'StablecoinTreasuryAgent'),
+      walletAddress: readString('AGENT_WALLET_ADDRESS', ''),
+      mission: readString(
+        'AGENT_MISSION',
+        'Monitor my Base wallet, explain Fluid lending state, find safe swap opportunities, and post concise status updates only when enabled.'
+      )
+    },
+    openai: {
+      apiKey: readString('OPENAI_API_KEY', ''),
+      model: readString('OPENAI_MODEL', 'gpt-5.1'),
+      baseUrl: readString('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
+      maxToolRounds: readNumber('MAX_TOOL_ROUNDS', 6)
+    },
+    moltx: {
+      apiBase: readString('MOLTX_API_BASE', 'https://moltx.io/v1'),
+      apiKey: readString('MOLTX_API_KEY', ''),
+      postUpdates: readBoolean('POST_TO_MOLTX', false)
+    },
+    swap: {
+      baseUrl: readString('MOLTX_SWAP_BASE', 'https://swap.moltx.io'),
+      enableQuotes: readBoolean('ENABLE_SWAP_QUOTES', true),
+      enableAutonomousSwaps: readBoolean('ENABLE_AUTONOMOUS_SWAPS', false),
+      quoteNetwork: readNetworkName('QUOTE_NETWORK', 'base'),
+      quoteSellToken: readString('QUOTE_SELL_TOKEN', ''),
+      quoteBuyToken: readString('QUOTE_BUY_TOKEN', ''),
+      quoteSellAmount: readString('QUOTE_SELL_AMOUNT', '0'),
+      maxSlippagePercent: readNumber('MAX_SLIPPAGE_PERCENT', 0.5),
+      maxPriceImpactPercent: readNumber('MAX_PRICE_IMPACT_PERCENT', 1)
+    },
+    fluid: {
+      baseUrl: readString('MOLTX_DEFI_BASE', 'https://defi.moltx.io'),
+      enabled: readBoolean('ENABLE_FLUID_LENDING', true),
+      minIdleUsdcRaw: BigInt(readString('MIN_IDLE_USDC_RAW', '5000000'))
+    },
+    launchpad: {
+      baseUrl: readString('MOLTX_LAUNCHPAD_BASE', 'https://launchpad.moltx.io'),
+      enabled: readBoolean('ENABLE_TOKEN_LAUNCHES', false)
+    }
+  };
+}
+
+function loadDotEnv(filePath: string): void {
+  if (!fs.existsSync(filePath)) {
+    return;
+  }
+
+  const contents = fs.readFileSync(filePath, 'utf8');
+  for (const line of contents.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue;
+    }
+
+    const separator = trimmed.indexOf('=');
+    if (separator === -1) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, separator).trim();
+    const value = stripQuotes(trimmed.slice(separator + 1).trim());
+    if (!(key in process.env)) {
+      process.env[key] = value;
+    }
+  }
+}
+
+function stripQuotes(value: string): string {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+
+  return value;
+}
+
+function readString(name: string, fallback: string): string {
+  return process.env[name] ?? fallback;
+}
+
+function readBoolean(name: string, fallback: boolean): boolean {
+  const value = process.env[name];
+  if (value === undefined || value === '') {
+    return fallback;
+  }
+
+  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+}
+
+function readNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') {
+    return fallback;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${name} must be a number`);
+  }
+
+  return parsed;
+}
+
+function readNetworkName(name: string, fallback: NetworkName): NetworkName {
+  const value = readString(name, fallback);
+  if (['ethereum', 'arbitrum', 'base', 'polygon', 'plasma'].includes(value)) {
+    return value as NetworkName;
+  }
+
+  throw new Error(`${name} must be one of ethereum, arbitrum, base, polygon, plasma`);
+}
