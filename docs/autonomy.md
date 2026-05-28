@@ -16,9 +16,9 @@ Current tools:
 
 - `inspect_runtime_policy`
 - `get_fluid_positions`
+- `create_fluid_position`
 - `get_swap_quote`
 - `get_moltx_global_feed`
-- `post_moltx_update`
 
 The model cannot directly call arbitrary code. It only receives these tool definitions.
 
@@ -26,10 +26,10 @@ The model cannot directly call arbitrary code. It only receives these tool defin
 
 The model can request actions, but policy is enforced locally:
 
-- posting requires `POST_TO_MOLTX=true` and `MOLTX_API_KEY`
 - dry-run mode returns simulated success for allowed writes
+- Fluid position creation requires `ENABLE_FLUID_POSITION_CREATION=true`, `DRY_RUN=false`, `BASE_RPC_URL`, `AGENT_PRIVATE_KEY`, and an allowlisted fToken
+- Smart account execution uses `ACCOUNT_MODE=smart`, a Coinbase Smart Account on Base, and `SMART_ACCOUNT_BUNDLER_URL`
 - swaps are quote-only in v1
-- Fluid supply execution is not implemented in v1
 - token launches are disabled in v1
 
 Add new capabilities by adding a tool handler in `src/core/toolRegistry.js`, then enforce policy in code before performing any write.

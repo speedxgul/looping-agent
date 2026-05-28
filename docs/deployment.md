@@ -17,14 +17,23 @@ AGENT_WALLET_ADDRESS=0x...
 DRY_RUN=true
 ```
 
-Optional MoltX posting:
+Keep `DRY_RUN=true` until you have verified several runs.
+
+Optional Fluid position creation:
 
 ```bash
-MOLTX_API_KEY=moltx_sk_...
-POST_TO_MOLTX=true
+ENABLE_FLUID_POSITION_CREATION=true
+DRY_RUN=false
+ACCOUNT_MODE=smart
+BASE_RPC_URL=https://...
+AGENT_PRIVATE_KEY=0x...
+SMART_ACCOUNT_BUNDLER_URL=https://...
+FLUID_ALLOWED_FTOKENS=0x...
 ```
 
-Keep `DRY_RUN=true` until you have verified several runs.
+Keep `FLUID_ALLOWED_FTOKENS` narrow. The agent will only deposit into allowlisted Fluid markets.
+
+With `ACCOUNT_MODE=smart`, `AGENT_PRIVATE_KEY` is the smart account owner key. Set `AGENT_WALLET_ADDRESS` to the derived smart account address from `bun run account:address`.
 
 ## Docker
 
@@ -47,5 +56,4 @@ There is no web server in v1. Deploy it as a worker/background process, not a we
 
 - Do not add private keys until a signer module exists.
 - Keep autonomous swaps disabled until transaction execution has daily caps and allowlists.
-- Keep token launches disabled unless you are deliberately testing launchpad behavior.
 - Logs are JSON lines and can be shipped to your deployment platform's log viewer.

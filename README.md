@@ -1,10 +1,10 @@
 # DeFi Agent v0
 
-An extensible v1 scaffold for an autonomous MoltX-based DeFi agent. OpenAI decides what to do, and local tool adapters perform bounded DeFi/social actions:
+An extensible v1 scaffold for an autonomous DeFi agent. OpenAI decides what to do, and local tool adapters perform bounded DeFi actions:
 
 - reads Fluid positions through `https://defi.moltx.io/positions`
+- can create Fluid lending positions on Base when signer config and policy flags are enabled
 - gets optional best-route swap quotes through `https://swap.moltx.io/swap`
-- can post status updates to MoltX Social through `https://moltx.io/v1/posts`
 - keeps token-launch support as a separate adapter for later
 - defaults to `DRY_RUN=true`, so it will not post or execute transactions unless explicitly enabled
 
@@ -19,18 +19,17 @@ bun run doctor
 bun run run:once
 ```
 
-Set `AGENT_WALLET_ADDRESS` before using live position checks. Set `MOLTX_API_KEY` and `POST_TO_MOLTX=true` only when you want the agent to post.
+Set `AGENT_WALLET_ADDRESS` before using live position checks.
 
 ## Project Shape
 
 ```text
 src/
-  clients/        MoltX, Fluid, swap, and launchpad HTTP clients
+  clients/        MoltX, Fluid, swap, and signing clients
   core/           autonomous agent loop, policy checks, token metadata
-  strategies/     current v1 strategy and future strategy home
   utils/          config, http, amounts, logging helpers
 docs/
-  architecture.md extension notes
+  architecture.md runtime notes
   moltx.md        endpoint notes from live skill files
 ```
 
@@ -52,19 +51,32 @@ bun run run:daemon
 
 The daemon runs one loop every `AUTONOMY_INTERVAL_MS`. Use a process manager, Docker, Render, Fly.io, Railway, a VPS, or any Bun 1.3+ runtime.
 
-The original non-LLM policy strategy is still available:
-
-```bash
-bun run run:strategy
-```
-
 ## Safety Defaults
 
 - `DRY_RUN=true`
 - `ENABLE_AUTONOMOUS_SWAPS=false`
-- `POST_TO_MOLTX=false`
-- `ENABLE_TOKEN_LAUNCHES=false`
+- `ENABLE_FLUID_POSITION_CREATION=false`
 - slippage and price impact checks are enforced before any future swap execution path
+
+To let the agent create Fluid positions, you also need:
+
+```bash
+ENABLE_FLUID_POSITION_CREATION=true
+DRY_RUN=false
+ACCOUNT_MODE=smart
+BASE_RPC_URL=https://...
+AGENT_PRIVATE_KEY=0x...
+SMART_ACCOUNT_BUNDLER_URL=https://...
+FLUID_ALLOWED_FTOKENS=0x...
+```
+
+Keep the allowed fToken list tight. This project is designed to approve and deposit only into explicitly allowlisted Fluid markets.
+
+When `ACCOUNT_MODE=smart`, `AGENT_PRIVATE_KEY` is the owner key and `AGENT_WALLET_ADDRESS` must be the derived Coinbase Smart Account address on Base. You can derive it with:
+
+```bash
+bun run account:address
+```
 
 Do not put private keys in this project until you add a real signer/executor module with explicit key-management rules.
 

@@ -1,6 +1,6 @@
 # Architecture
 
-The scaffold separates decision-making from protocol access.
+The scaffold separates autonomous decision-making from protocol access.
 
 ## Layers
 
@@ -8,40 +8,17 @@ The scaffold separates decision-making from protocol access.
 
 Small HTTP clients. They do not decide whether an action is safe. They only shape API requests and responses.
 
-`src/strategies`
-
-Strategies inspect state and propose actions. The v1 strategy is `stablecoinTreasuryStrategy`.
-
 `src/core/policy.js`
 
 Central risk checks. Before an action can execute, it must pass policy. Future strategies should reuse this instead of duplicating safety checks.
 
-`src/core/agent.js`
+`src/core/autonomousAgent.js`
 
-Runs one agent loop: collect state, ask the strategy for actions, apply policy, execute permitted actions.
-
-`src/core/executor.js`
-
-Executes approved actions. In v1, writes are skipped in dry-run mode. Swap execution and Fluid deposits are intentionally placeholders until a signer module is added.
-
-## Adding Strategies
-
-Create a new file in `src/strategies/` that exports:
-
-```js
-export async function myStrategy(context) {
-  return {
-    observations: [],
-    actions: []
-  };
-}
-```
-
-Then import it in `src/index.js` and pass it to `createAgent`.
+Runs the OpenAI tool-calling loop: build prompt, expose tools, execute tool calls locally, return an operational summary.
 
 ## Adding Live Transaction Execution
 
-Add a signer-backed executor module, for example `src/execution/viemExecutor.js`, and keep these rules:
+Keep these rules as the execution surface grows:
 
 - never execute if `DRY_RUN=true`
 - require explicit enable flags per action type

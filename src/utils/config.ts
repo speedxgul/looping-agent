@@ -29,14 +29,12 @@ export function loadConfig(): AppConfig {
       maxToolRounds: readNumber('MAX_TOOL_ROUNDS', 6)
     },
     moltx: {
-      apiBase: readString('MOLTX_API_BASE', 'https://moltx.io/v1'),
-      apiKey: readString('MOLTX_API_KEY', ''),
-      postUpdates: readBoolean('POST_TO_MOLTX', false)
+      apiBase: readString('MOLTX_API_BASE', 'https://moltx.io/v1')
     },
     swap: {
       baseUrl: readString('MOLTX_SWAP_BASE', 'https://swap.moltx.io'),
       enableQuotes: readBoolean('ENABLE_SWAP_QUOTES', true),
-      enableAutonomousSwaps: readBoolean('ENABLE_AUTONOMOUS_SWAPS', false),
+      enableAutonomousSwaps: readBoolean('ENABLE_AUTONOMOUS_SWAPS', true),
       quoteNetwork: readNetworkName('QUOTE_NETWORK', 'base'),
       quoteSellToken: readString('QUOTE_SELL_TOKEN', ''),
       quoteBuyToken: readString('QUOTE_BUY_TOKEN', ''),
@@ -47,11 +45,22 @@ export function loadConfig(): AppConfig {
     fluid: {
       baseUrl: readString('MOLTX_DEFI_BASE', 'https://defi.moltx.io'),
       enabled: readBoolean('ENABLE_FLUID_LENDING', true),
-      minIdleUsdcRaw: BigInt(readString('MIN_IDLE_USDC_RAW', '5000000'))
+      enablePositionCreation: readBoolean('ENABLE_FLUID_POSITION_CREATION', true),
+      minIdleUsdcRaw: BigInt(readString('MIN_IDLE_USDC_RAW', '5000000')),
+      maxSupplyAmountRaw: BigInt(readString('FLUID_MAX_SUPPLY_AMOUNT_RAW', '10000000')),
+      allowedFTokens: readCsv('FLUID_ALLOWED_FTOKENS'),
+      defaultFTokens: {
+        usdc: readString('FLUID_USDC_FTOKEN', ''),
+        weth: readString('FLUID_WETH_FTOKEN', '')
+      }
     },
-    launchpad: {
-      baseUrl: readString('MOLTX_LAUNCHPAD_BASE', 'https://launchpad.moltx.io'),
-      enabled: readBoolean('ENABLE_TOKEN_LAUNCHES', false)
+    evm: {
+      accountMode: readAccountMode('ACCOUNT_MODE', 'eoa'),
+      baseRpcUrl: readString('BASE_RPC_URL', ''),
+      privateKey: readString('AGENT_PRIVATE_KEY', ''),
+      smartAccountType: 'coinbase',
+      smartAccountBundlerUrl: readString('SMART_ACCOUNT_BUNDLER_URL', ''),
+      smartAccountUsePaymaster: readBoolean('SMART_ACCOUNT_USE_PAYMASTER', false)
     }
   };
 }
@@ -126,4 +135,25 @@ function readNetworkName(name: string, fallback: NetworkName): NetworkName {
   }
 
   throw new Error(`${name} must be one of ethereum, arbitrum, base, polygon, plasma`);
+}
+
+function readAccountMode(name: string, fallback: 'eoa' | 'smart'): 'eoa' | 'smart' {
+  const value = readString(name, fallback);
+  if (value === 'eoa' || value === 'smart') {
+    return value;
+  }
+
+  throw new Error(`${name} must be either eoa or smart`);
+}
+
+function readCsv(name: string): string[] {
+  const raw = process.env[name];
+  if (!raw) {
+    return [];
+  }
+
+  return raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
 }

@@ -115,9 +115,12 @@ function buildInstructions(config: AppConfig): string {
     `You are ${config.agent.name}, an autonomous DeFi operations agent.`,
     `Mission: ${config.agent.mission}`,
     'You operate conservatively. Your job is to observe, reason, and act only through the provided tools.',
-    'Never claim that you executed a swap, deposit, borrow, token launch, or social post unless the tool result says it executed.',
+    'Never claim that you executed a swap, deposit, or borrow unless the tool result says it executed.',
     'Prefer read-only monitoring and concise summaries. Do not ask for private keys.',
-    'Respect local policy gates: dry-run mode, social posting flags, swap execution flags, and token launch flags are final.',
+    'Respect local policy gates: dry-run mode and swap execution flags are final.',
+    'Always start each cycle by calling inspect_runtime_policy.',
+    'If a wallet is configured and Fluid lending is enabled, always call get_fluid_positions. This is read-only and does not require any allowlisted markets.',
+    'Use create_fluid_position only when it is clearly justified, explicitly allowed by runtime policy, and the target market/amount are concrete.',
     'If an action is blocked, explain the blocker and the next configuration change needed.',
     'Keep final summaries short and operational: observations, attempted actions, blocked actions, next check.'
   ].join('\n');
@@ -131,9 +134,7 @@ function buildRunPrompt(config: AppConfig): string {
     `Fluid lending enabled: ${config.fluid.enabled}`,
     `Swap quotes enabled: ${config.swap.enableQuotes}`,
     `Autonomous swaps enabled: ${config.swap.enableAutonomousSwaps}`,
-    `MoltX posting enabled: ${config.moltx.postUpdates}`,
-    `Token launches enabled: ${config.launchpad.enabled}`,
-    'Use tools as needed, then return a concise final summary.'
+    'First inspect runtime policy. Then, if possible, load Fluid positions and include a brief position summary even if no actions are taken.'
   ].join('\n');
 }
 

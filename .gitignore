@@ -5,3 +5,4 @@ dist/
 logs/
 data/*.json
 !data/.gitkeep
+keeping-progress-track.txt

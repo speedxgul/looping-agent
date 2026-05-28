@@ -1,5 +1,5 @@
 import type { FluidClient } from './clients/fluidClient.js';
-import type { LaunchpadClient } from './clients/launchpadClient.js';
+import type { FluidExecutionClient } from './clients/fluidExecutionClient.js';
 import type { MoltxSocialClient } from './clients/moltxSocialClient.js';
 import type { MoltxSwapClient } from './clients/moltxSwapClient.js';
 import type { OpenAIResponsesClient } from './clients/openaiResponsesClient.js';
@@ -27,8 +27,6 @@ export interface AppConfig {
   };
   moltx: {
     apiBase: string;
-    apiKey: string;
-    postUpdates: boolean;
   };
   swap: {
     baseUrl: string;
@@ -44,11 +42,22 @@ export interface AppConfig {
   fluid: {
     baseUrl: string;
     enabled: boolean;
+    enablePositionCreation: boolean;
     minIdleUsdcRaw: bigint;
+    maxSupplyAmountRaw: bigint;
+    allowedFTokens: string[];
+    defaultFTokens: {
+      usdc: string;
+      weth: string;
+    };
   };
-  launchpad: {
-    baseUrl: string;
-    enabled: boolean;
+  evm: {
+    accountMode: 'eoa' | 'smart';
+    baseRpcUrl: string;
+    privateKey: string;
+    smartAccountType: 'coinbase';
+    smartAccountBundlerUrl: string;
+    smartAccountUsePaymaster: boolean;
   };
 }
 
@@ -56,7 +65,7 @@ export interface Clients {
   social: MoltxSocialClient;
   swap: MoltxSwapClient;
   fluid: FluidClient;
-  launchpad: LaunchpadClient;
+  fluidExecution: FluidExecutionClient;
   openai: OpenAIResponsesClient;
 }
 
@@ -175,10 +184,8 @@ export interface OpenAIInputItem {
 
 export type AgentAction =
   | { type: 'OBSERVE'; summary: string; details?: Record<string, unknown> }
-  | { type: 'SOCIAL_POST'; content: string }
   | { type: 'SWAP_EXECUTE'; route?: SwapRoute | null; details?: Record<string, unknown> }
-  | { type: 'FLUID_SUPPLY'; details?: Record<string, unknown> }
-  | { type: 'TOKEN_LAUNCH'; details?: Record<string, unknown> };
+  | { type: 'FLUID_SUPPLY'; details?: Record<string, unknown> };
 
 export interface StrategyResult {
   observations: Array<{ summary: string; details?: Record<string, unknown> }>;
