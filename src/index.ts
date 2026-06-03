@@ -71,7 +71,10 @@ async function main() {
     logger
   });
 
-  await agent.runOnce();
+  const result = await agent.runOnce();
+  if (result.outputText) {
+    console.log('\n' + result.outputText + '\n');
+  }
 }
 
 function runDoctor(config: AppConfig, logger: Logger): void {
@@ -138,7 +141,10 @@ async function runDaemon({ config, clients, logger }: { config: AppConfig; clien
 
     running = true;
     try {
-      await agent.runOnce();
+      const result = await agent.runOnce();
+      if (result.outputText) {
+        console.log('\n' + result.outputText + '\n');
+      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error('Autonomous daemon loop failed', { error: message });

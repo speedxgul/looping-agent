@@ -119,7 +119,8 @@ function buildInstructions(config: AppConfig): string {
     'Prefer read-only monitoring and concise summaries. Do not ask for private keys.',
     'Respect local policy gates: dry-run mode and swap execution flags are final.',
     'Always start each cycle by calling inspect_runtime_policy.',
-    'If a wallet is configured and Fluid lending is enabled, always call get_fluid_positions. This is read-only and does not require any allowlisted markets.',
+    'If a wallet is configured and Fluid lending is enabled, always call get_fluid_positions AND get_fluid_markets. Both are read-only and do not require any allowlisted markets.',
+    'When deciding where to deposit, compare get_fluid_markets totalApr across allowlisted fTokens (higher is better). stakingApr and merkleRewardsApr are additive extras not included in totalApr.',
     'Use create_fluid_position only when it is clearly justified, explicitly allowed by runtime policy, and the target market/amount are concrete.',
     'If an action is blocked, explain the blocker and the next configuration change needed.',
     'Keep final summaries short and operational: observations, attempted actions, blocked actions, next check.'
@@ -134,7 +135,7 @@ function buildRunPrompt(config: AppConfig): string {
     `Fluid lending enabled: ${config.fluid.enabled}`,
     `Swap quotes enabled: ${config.swap.enableQuotes}`,
     `Autonomous swaps enabled: ${config.swap.enableAutonomousSwaps}`,
-    'First inspect runtime policy. Then, if possible, load Fluid positions and include a brief position summary even if no actions are taken.'
+    'First inspect runtime policy. Then load Fluid positions and Fluid markets (get_fluid_markets). Report markets ranked by totalApr, note the top allowlisted candidate for idle funds, and include fToken addresses/APRs so the operator can configure FLUID_ALLOWED_FTOKENS.'
   ].join('\n');
 }
 

@@ -99,6 +99,43 @@ export function createToolRegistry({ config, clients, logger }: ToolRegistryOpti
       };
     },
 
+    get_fluid_markets: async (args) => {
+      if (!config.fluid.enabled) {
+        return { ok: false, error: 'Fluid lending is disabled' };
+      }
+
+      const chain = readStringArg(args.chain, 'base');
+      const result = await clients.fluidExecution.getMarkets();
+      const markets = result.markets ?? [];
+
+      const ranked = markets.map((m, index) => ({
+        rank: index + 1,
+        fToken: m.fToken,
+        underlying: m.underlying,
+        symbol: m.symbol,
+        name: m.name,
+        decimals: m.decimals,
+        isNativeUnderlying: m.isNativeUnderlying,
+        totalApr: m.totalApr,
+        supplyRate: m.supplyRate,
+        rewardsRate: m.rewardsRate,
+        stakingApr: m.stakingApr,
+        merkleRewardsApr: m.merkleRewardsApr,
+        totalAssets: m.totalAssets
+      }));
+
+      return {
+        ok: true,
+        chain,
+        count: ranked.length,
+        rateSource: 'https://api.fluid.instadapp.io/v2/lending/8453/tokens',
+        rateNotes:
+          'totalApr = supplyRate + native rewardsRate. stakingApr and merkleRewardsApr are extra yield not included in totalApr. Markets are sorted by totalApr descending.',
+        topMarket: ranked[0] ?? null,
+        markets: ranked
+      };
+    },
+
     get_moltx_global_feed: async (args) => {
       const limit = readNumberArg(args.limit, 10);
       const type = sanitizeFeedType(args.type);
@@ -243,6 +280,24 @@ function definitions(): OpenAIToolDefinition[] {
           sellAmount: { type: 'string', description: 'Raw token amount in smallest units.' },
           slippage: { type: 'number', description: 'Maximum acceptable slippage percentage.' },
           maxSlippage: { type: 'number', description: 'Maximum slippage threshold.' }
+        },
+        required: []
+      }
+    },
+    {
+      type: 'function',
+      name: 'get_fluid_markets',
+      description:
+        'List Fluid fToken lending markets on Base with live APRs from the Fluid API (supply, native rewards, total, optional staking/merkle). Markets are ranked by totalApr. Use this to pick the best allowlisted pool before create_fluid_position.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          chain: {
+            type: 'string',
+            enum: ['base', 'ethereum', 'arbitrum'],
+            description: 'Chain to query markets for. Defaults to base.'
+          }
         },
         required: []
       }

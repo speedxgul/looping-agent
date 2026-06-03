@@ -93,6 +93,32 @@ export interface FluidPositionsResponse {
   [key: string]: unknown;
 }
 
+export interface FluidMarket {
+  fToken: string;
+  underlying: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  isNativeUnderlying: boolean;
+  /** Liquidity-layer supply APR (percent, e.g. 5.19 = 5.19%). */
+  supplyRate: number;
+  /** Native on-chain reward APR added to supply (percent). */
+  rewardsRate: number;
+  /** supplyRate + rewardsRate from Fluid API totalRate (percent). */
+  totalApr: number;
+  /** Underlying asset staking APR when present (percent); not included in totalApr. */
+  stakingApr?: number;
+  /** Sum of Fluid merkle reward APRs when present (percent); not included in totalApr. */
+  merkleRewardsApr?: number;
+  totalAssets: string;
+  chain?: string;
+}
+
+export interface FluidMarketsResponse {
+  markets?: FluidMarket[];
+  [key: string]: unknown;
+}
+
 export interface TokenInfo {
   address: string;
   name?: string;

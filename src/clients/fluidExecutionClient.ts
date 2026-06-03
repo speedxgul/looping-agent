@@ -12,7 +12,45 @@ import {
   type Address,
   type Hex
 } from 'viem';
-import type { Logger } from '../types.js';
+import type { FluidMarket, FluidMarketsResponse, Logger } from '../types.js';
+import { requestJson } from '../utils/http.js';
+
+const LENDING_RESOLVER_BASE = '0x3aF6FBEc4a2FE517F56E402C65e3f4c3e18C1D86' as const; // fluid lending resolver contract exposes public data
+const FLUID_LENDING_RATES_API = 'https://api.fluid.instadapp.io/v2/lending';
+const BASE_CHAIN_ID = 8453;
+
+interface FluidLendingApiToken {
+  address: string;
+  supplyRate?: string | number;
+  rewardsRate?: string | number;
+  totalRate?: string | number;
+  asset?: { stakingApr?: string | number };
+  rewards?: Array<{ rewardType?: string; rate?: string | number }>;
+}
+
+interface FluidLendingApiResponse {
+  data?: FluidLendingApiToken[];
+}
+
+interface FluidApiRates {
+  supplyRate: number;
+  rewardsRate: number;
+  totalApr: number;
+  stakingApr?: number;
+  merkleRewardsApr?: number;
+}
+
+const lendingResolverAbi = parseAbi([
+  'function getAllFTokens() view returns (address[])'
+]);
+
+const fTokenReadAbi = parseAbi([
+  'function symbol() view returns (string)',
+  'function name() view returns (string)',
+  'function decimals() view returns (uint8)',
+  'function asset() view returns (address)',
+  'function totalAssets() view returns (uint256)'
+]);
 
 const fluidFTokenAbi = parseAbi([
   'function deposit(uint256 assets, address receiver) returns (uint256 shares)',
@@ -118,6 +156,96 @@ export class FluidExecutionClient {
       address: await this.getCoinbaseSmartAccountAddress(owner),
       ownerAddress: owner.address
     };
+  }
+
+  async getMarkets(): Promise<FluidMarketsResponse> {
+    if (!this.rpcUrl) {
+      throw new Error('BASE_RPC_URL is required for on-chain market discovery');
+    }
+
+    const client = createPublicClient({ chain: base, transport: http(this.rpcUrl) });
+
+    const addresses = await client.readContract({
+      address: LENDING_RESOLVER_BASE,
+      abi: lendingResolverAbi,
+      functionName: 'getAllFTokens'
+    });
+
+    this.logger.info('Fluid resolver: discovered fTokens', { count: addresses.length });
+
+    const apiRates = await this.fetchApiRates();
+
+    const markets = await Promise.all(
+      addresses.map(async (fToken): Promise<FluidMarket> => {
+        const [symbol, name, decimals, underlying, totalAssets] = await Promise.all([
+          client.readContract({ address: fToken, abi: fTokenReadAbi, functionName: 'symbol' }),
+          client.readContract({ address: fToken, abi: fTokenReadAbi, functionName: 'name' }),
+          client.readContract({ address: fToken, abi: fTokenReadAbi, functionName: 'decimals' }),
+          client.readContract({ address: fToken, abi: fTokenReadAbi, functionName: 'asset' })
+            .catch(() => '0x0000000000000000000000000000000000000000' as Address),
+          client.readContract({ address: fToken, abi: fTokenReadAbi, functionName: 'totalAssets' })
+            .catch(() => 0n)
+        ]);
+
+        const rates = apiRates.get(fToken.toLowerCase());
+
+        return {
+          fToken,
+          underlying,
+          symbol,
+          name,
+          decimals,
+          isNativeUnderlying: underlying === '0x0000000000000000000000000000000000000000',
+          totalAssets: totalAssets.toString(),
+          supplyRate: rates?.supplyRate ?? 0,
+          rewardsRate: rates?.rewardsRate ?? 0,
+          totalApr: rates?.totalApr ?? 0,
+          ...(rates?.stakingApr !== undefined ? { stakingApr: rates.stakingApr } : {}),
+          ...(rates?.merkleRewardsApr !== undefined ? { merkleRewardsApr: rates.merkleRewardsApr } : {}),
+          chain: 'base'
+        };
+      })
+    );
+
+    markets.sort((a, b) => b.totalApr - a.totalApr);
+
+    return { markets };
+  }
+
+  private async fetchApiRates(): Promise<Map<string, FluidApiRates>> {
+    const url = `${FLUID_LENDING_RATES_API}/${BASE_CHAIN_ID}/tokens`;
+
+    try {
+      const response = await requestJson<FluidLendingApiResponse>(url);
+      const rates = new Map<string, FluidApiRates>();
+
+      for (const token of response.data ?? []) {
+        const merkleBps = (token.rewards ?? [])
+          .filter((reward) => reward.rewardType === 'merkle')
+          .reduce((sum, reward) => sum + Number(reward.rate ?? 0), 0);
+
+        const entry: FluidApiRates = {
+          supplyRate: fluidRateBpsToPercent(token.supplyRate),
+          rewardsRate: fluidRateBpsToPercent(token.rewardsRate),
+          totalApr: fluidRateBpsToPercent(token.totalRate)
+        };
+        if (token.asset?.stakingApr !== undefined) {
+          entry.stakingApr = fluidRateBpsToPercent(token.asset.stakingApr);
+        }
+        if (merkleBps > 0) {
+          entry.merkleRewardsApr = fluidRateBpsToPercent(merkleBps);
+        }
+
+        rates.set(token.address.toLowerCase(), entry);
+      }
+
+      this.logger.info('Fluid lending rates API loaded', { tokens: rates.size, chainId: BASE_CHAIN_ID });
+      return rates;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn('Fluid lending rates API unavailable; APRs will be zero', { error: message });
+      return new Map();
+    }
   }
 
   async supplyToFluid({
@@ -364,4 +492,14 @@ export class FluidExecutionClient {
 
     return smartAccount.getAddress();
   }
+}
+
+/** Fluid API rates use 1e2 precision (100 = 1%, 519 = 5.19%). */
+function fluidRateBpsToPercent(value: string | number | undefined): number {
+  const n = Number(value ?? 0);
+  if (!Number.isFinite(n)) {
+    return 0;
+  }
+
+  return n / 100;
 }
