@@ -12,7 +12,9 @@ const baseConfig: AppConfig = {
   agent: {
     name: 'TestAgent',
     walletAddress: '0x0000000000000000000000000000000000000001',
-    mission: 'test'
+    mission: 'test',
+    statePath: 'data/agent-state.json',
+    depositCooldownMs: 86400000
   },
   openai: {
     apiKey: '',
@@ -21,9 +23,7 @@ const baseConfig: AppConfig = {
     maxToolRounds: 4
   },
   moltx: {
-    apiBase: 'https://moltx.io/v1',
-    apiKey: '',
-    postUpdates: false
+    apiBase: 'https://moltx.io/v1'
   },
   swap: {
     baseUrl: 'https://swap.moltx.io',
@@ -51,7 +51,7 @@ const baseConfig: AppConfig = {
   evm: {
     accountMode: 'eoa',
     baseRpcUrl: 'https://base.example',
-    privateKey: '0xabc',
+    privateKey: `0x${'11'.repeat(32)}`,
     smartAccountType: 'coinbase',
     smartAccountBundlerUrl: '',
     smartAccountUsePaymaster: false

@@ -18,6 +18,8 @@ export interface AppConfig {
     name: string;
     walletAddress: string;
     mission: string;
+    statePath: string;
+    depositCooldownMs: number;
   };
   openai: {
     apiKey: string;
@@ -117,6 +119,20 @@ export interface FluidMarket {
 export interface FluidMarketsResponse {
   markets?: FluidMarket[];
   [key: string]: unknown;
+}
+
+export interface WalletTokenBalance {
+  symbol: string;
+  address: string;
+  decimals: number;
+  raw: string;
+  formatted: string;
+}
+
+export interface WalletBalancesResponse {
+  wallet: string;
+  eth: WalletTokenBalance;
+  usdc: WalletTokenBalance;
 }
 
 export interface TokenInfo {

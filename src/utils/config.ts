@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { AppConfig, NetworkName } from '../types.js';
+import { normalizePrivateKey } from './privateKey.js';
 
 const DEFAULT_ENV_PATH = path.resolve(process.cwd(), '.env');
 
@@ -20,7 +21,9 @@ export function loadConfig(): AppConfig {
       mission: readString(
         'AGENT_MISSION',
         'Monitor my Base wallet, explain Fluid lending state, find safe swap opportunities, and post concise status updates only when enabled.'
-      )
+      ),
+      statePath: readString('AGENT_STATE_PATH', 'data/agent-state.json'),
+      depositCooldownMs: readNumber('DEPOSIT_COOLDOWN_MS', 86400000)
     },
     openai: {
       apiKey: readString('OPENAI_API_KEY', ''),
@@ -57,7 +60,7 @@ export function loadConfig(): AppConfig {
     evm: {
       accountMode: readAccountMode('ACCOUNT_MODE', 'eoa'),
       baseRpcUrl: readString('BASE_RPC_URL', ''),
-      privateKey: readString('AGENT_PRIVATE_KEY', ''),
+      privateKey: normalizePrivateKey(readString('AGENT_PRIVATE_KEY', '')),
       smartAccountType: 'coinbase',
       smartAccountBundlerUrl: readString('SMART_ACCOUNT_BUNDLER_URL', ''),
       smartAccountUsePaymaster: readBoolean('SMART_ACCOUNT_USE_PAYMASTER', false)
