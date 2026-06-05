@@ -12,12 +12,15 @@ import {
   type Address,
   type Hex
 } from 'viem';
-import type { FluidMarket, FluidMarketsResponse, Logger } from '../types.js';
+import { BASE_USDC_ADDRESS } from '../core/agentMemory.js';
+import type { FluidMarket, FluidMarketsResponse, Logger, WalletBalancesResponse } from '../types.js';
+import { formatUnits } from '../utils/amounts.js';
 import { requestJson } from '../utils/http.js';
 
 const LENDING_RESOLVER_BASE = '0x3aF6FBEc4a2FE517F56E402C65e3f4c3e18C1D86' as const; // fluid lending resolver contract exposes public data
 const FLUID_LENDING_RATES_API = 'https://api.fluid.instadapp.io/v2/lending';
 const BASE_CHAIN_ID = 8453;
+const POST_APPROVAL_DEPOSIT_RETRY_DELAY_MS = 2500;
 
 interface FluidLendingApiToken {
   address: string;
@@ -212,6 +215,44 @@ export class FluidExecutionClient {
     return { markets };
   }
 
+  async getWalletBalances(walletAddress: string): Promise<WalletBalancesResponse> {
+    if (!this.rpcUrl) {
+      throw new Error('BASE_RPC_URL is required to read wallet balances');
+    }
+
+    const wallet = getAddress(walletAddress);
+    const client = createPublicClient({ chain: base, transport: http(this.rpcUrl) });
+    const usdcAddress = getAddress(BASE_USDC_ADDRESS);
+
+    const [ethBalance, usdcBalance] = await Promise.all([
+      client.getBalance({ address: wallet }),
+      client.readContract({
+        address: usdcAddress,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [wallet]
+      })
+    ]);
+
+    return {
+      wallet,
+      eth: {
+        symbol: 'ETH',
+        address: '0x0000000000000000000000000000000000000000',
+        decimals: 18,
+        raw: ethBalance.toString(),
+        formatted: formatUnits(ethBalance, 18)
+      },
+      usdc: {
+        symbol: 'USDC',
+        address: usdcAddress,
+        decimals: 6,
+        raw: usdcBalance.toString(),
+        formatted: formatUnits(usdcBalance, 6)
+      }
+    };
+  }
+
   private async fetchApiRates(): Promise<Map<string, FluidApiRates>> {
     const url = `${FLUID_LENDING_RATES_API}/${BASE_CHAIN_ID}/tokens`;
 
@@ -333,7 +374,8 @@ export class FluidExecutionClient {
       args: [account.address, normalizedFToken]
     });
 
-    if (allowance < amount) {
+    let currentAllowance = allowance;
+    if (currentAllowance < amount) {
       const approval = await publicClient.simulateContract({
         account,
         address: normalizedUnderlying,
@@ -343,14 +385,37 @@ export class FluidExecutionClient {
       });
       approvalHash = await walletClient.writeContract(approval.request);
       await publicClient.waitForTransactionReceipt({ hash: approvalHash });
+
+      currentAllowance = await publicClient.readContract({
+        address: normalizedUnderlying,
+        abi: erc20Abi,
+        functionName: 'allowance',
+        args: [account.address, normalizedFToken]
+      });
+
+      this.logger.info('Fluid approval confirmed', {
+        wallet: account.address,
+        tokenAddress: normalizedUnderlying,
+        spender: normalizedFToken,
+        rawAmount,
+        approvalTxHash: approvalHash,
+        allowance: currentAllowance.toString()
+      });
+
+      if (currentAllowance < amount) {
+        throw new Error(
+          `Fluid approval confirmed but allowance is still below deposit amount (${currentAllowance.toString()} < ${amount.toString()}); approvalTxHash=${approvalHash}`
+        );
+      }
     }
 
-    const deposit = await publicClient.simulateContract({
+    const deposit = await this.simulateFluidDepositWithRetry({
+      publicClient,
       account,
-      address: normalizedFToken,
-      abi: fluidFTokenAbi,
-      functionName: 'deposit',
-      args: [amount, account.address]
+      fTokenAddress: normalizedFToken,
+      amount,
+      receiver: account.address,
+      approvalHash
     });
     const depositHash = await walletClient.writeContract(deposit.request);
     const receipt = await publicClient.waitForTransactionReceipt({ hash: depositHash });
@@ -492,6 +557,58 @@ export class FluidExecutionClient {
 
     return smartAccount.getAddress();
   }
+
+  private async simulateFluidDepositWithRetry({
+    publicClient,
+    account,
+    fTokenAddress,
+    amount,
+    receiver,
+    approvalHash
+  }: {
+    publicClient: ReturnType<typeof createPublicClient>;
+    account: ReturnType<typeof privateKeyToAccount>;
+    fTokenAddress: Address;
+    amount: bigint;
+    receiver: Address;
+    approvalHash: Hex | undefined;
+  }) {
+    try {
+      return await publicClient.simulateContract({
+        account,
+        address: fTokenAddress,
+        abi: fluidFTokenAbi,
+        functionName: 'deposit',
+        args: [amount, receiver]
+      });
+    } catch (error: unknown) {
+      if (!approvalHash) {
+        throw annotateFluidDepositError(error);
+      }
+
+      this.logger.warn('Fluid deposit simulation failed after approval; retrying once', {
+        wallet: receiver,
+        fTokenAddress,
+        rawAmount: amount.toString(),
+        approvalTxHash: approvalHash,
+        error: describeFluidDepositError(error)
+      });
+
+      await sleep(POST_APPROVAL_DEPOSIT_RETRY_DELAY_MS);
+
+      try {
+        return await publicClient.simulateContract({
+          account,
+          address: fTokenAddress,
+          abi: fluidFTokenAbi,
+          functionName: 'deposit',
+          args: [amount, receiver]
+        });
+      } catch (retryError: unknown) {
+        throw annotateFluidDepositError(retryError, approvalHash);
+      }
+    }
+  }
 }
 
 /** Fluid API rates use 1e2 precision (100 = 1%, 519 = 5.19%). */
@@ -502,4 +619,57 @@ function fluidRateBpsToPercent(value: string | number | undefined): number {
   }
 
   return n / 100;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function annotateFluidDepositError(error: unknown, approvalHash?: Hex): Error {
+  const details = describeFluidDepositError(error);
+  const approvalContext = approvalHash ? `; approvalTxHash=${approvalHash}` : '';
+  return new Error(`Fluid deposit simulation failed${approvalContext}: ${details}`);
+}
+
+function describeFluidDepositError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const selector = extractRevertSelector(error);
+  if (!selector) {
+    return message;
+  }
+
+  return `${message} (revertSelector=${selector})`;
+}
+
+function extractRevertSelector(error: unknown): Hex | undefined {
+  const data = extractRevertData(error);
+  if (data && data.length >= 10) {
+    return data.slice(0, 10) as Hex;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(/0x[a-fA-F0-9]{8}/);
+  return match?.[0] as Hex | undefined;
+}
+
+function extractRevertData(value: unknown, seen = new Set<unknown>()): Hex | undefined {
+  if (!value || typeof value !== 'object' || seen.has(value)) {
+    return undefined;
+  }
+  seen.add(value);
+
+  const record = value as Record<string, unknown>;
+  for (const key of ['data', 'error', 'cause']) {
+    const candidate = record[key];
+    if (typeof candidate === 'string' && /^0x[a-fA-F0-9]+$/.test(candidate)) {
+      return candidate as Hex;
+    }
+
+    const nested = extractRevertData(candidate, seen);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return undefined;
 }
