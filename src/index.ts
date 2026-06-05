@@ -1,4 +1,5 @@
 import { loadConfig } from './utils/config.js';
+import { describePrivateKeyConfig } from './utils/privateKey.js';
 import { createLogger } from './utils/logger.js';
 import { MoltxSocialClient } from './clients/moltxSocialClient.js';
 import { MoltxSwapClient } from './clients/moltxSwapClient.js';
@@ -86,6 +87,8 @@ function runDoctor(config: AppConfig, logger: Logger): void {
   logger.info(`OpenAI model: ${config.openai.model}`);
   logger.info(`Dry run: ${config.runtime.dryRun}`);
   logger.info(`Autonomy interval ms: ${config.runtime.autonomyIntervalMs}`);
+  logger.info(`Agent state path: ${config.agent.statePath}`);
+  logger.info(`Deposit cooldown ms: ${config.agent.depositCooldownMs}`);
   logger.info(`Fluid lending enabled: ${config.fluid.enabled}`);
   logger.info(`Fluid position creation enabled: ${config.fluid.enablePositionCreation}`);
   logger.info(`Swap quotes enabled: ${config.swap.enableQuotes}`);
@@ -104,8 +107,11 @@ function runDoctor(config: AppConfig, logger: Logger): void {
       logger.warn('ENABLE_FLUID_POSITION_CREATION=true but BASE_RPC_URL is empty.');
     }
 
-    if (!config.evm.privateKey) {
+    const keyStatus = describePrivateKeyConfig(process.env.AGENT_PRIVATE_KEY ?? '');
+    if (!keyStatus.configured) {
       logger.warn('ENABLE_FLUID_POSITION_CREATION=true but AGENT_PRIVATE_KEY is empty.');
+    } else if (!keyStatus.valid) {
+      logger.warn('AGENT_PRIVATE_KEY is set but invalid for signing', { hint: keyStatus.hint });
     }
 
     if (config.evm.accountMode === 'smart' && !config.evm.smartAccountBundlerUrl) {

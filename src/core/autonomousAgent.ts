@@ -1,3 +1,11 @@
+import {
+  beginRun,
+  endRun,
+  getMemorySummary,
+  loadAgentState,
+  resolveAgentStatePath,
+  saveAgentState
+} from './agentMemory.js';
 import { createToolRegistry } from './toolRegistry.js';
 import type {
   AppConfig,
@@ -16,14 +24,27 @@ interface AutonomousAgentOptions {
 }
 
 export function createAutonomousAgent({ config, clients, logger }: AutonomousAgentOptions) {
-  const toolRegistry = createToolRegistry({ config, clients, logger });
+  const statePath = resolveAgentStatePath(config);
 
   return {
     async runOnce() {
+      const state = loadAgentState(config, statePath);
+      const runId = beginRun(state);
+      const persist = () => saveAgentState(statePath, state);
+
+      const toolRegistry = createToolRegistry({
+        config,
+        clients,
+        logger,
+        memory: { state, runId, statePath, persist }
+      });
+
       logger.info('Starting autonomous agent loop', {
         agent: config.agent.name,
         model: config.openai.model,
-        dryRun: config.runtime.dryRun
+        dryRun: config.runtime.dryRun,
+        runId,
+        statePath
       });
 
       const input: OpenAIInputItem[] = [
@@ -32,25 +53,37 @@ export function createAutonomousAgent({ config, clients, logger }: AutonomousAge
           content: [
             {
               type: 'input_text',
-              text: buildRunPrompt(config)
+              text: [
+                buildRunPrompt(config),
+                '---',
+                'Agent memory (from prior runs):',
+                JSON.stringify(getMemorySummary(state, config, runId), null, 2)
+              ].join('\n')
             }
           ]
         }
       ];
 
-      const result = await runToolLoop({
-        clients,
-        config,
-        logger,
-        toolRegistry,
-        input
-      });
+      let result: Awaited<ReturnType<typeof runToolLoop>> | undefined;
+      try {
+        result = await runToolLoop({
+          clients,
+          config,
+          logger,
+          toolRegistry,
+          input
+        });
+      } finally {
+        endRun(state, runId, result?.outputText);
+        persist();
+      }
 
       logger.info('Autonomous agent loop complete', {
-        output: result.outputText || '(no text output)'
+        output: result?.outputText || '(no text output)',
+        runId
       });
 
-      return result;
+      return result ?? { response: null, outputText: undefined };
     }
   };
 }
@@ -110,32 +143,57 @@ async function runToolLoop({ clients, config, logger, toolRegistry, input }: Too
   };
 }
 
+function treasuryModeEnabled(config: AppConfig): boolean {
+  return !config.runtime.dryRun && config.fluid.enabled && config.fluid.enablePositionCreation;
+}
+
 function buildInstructions(config: AppConfig): string {
-  return [
+  const lines = [
     `You are ${config.agent.name}, an autonomous DeFi operations agent.`,
     `Mission: ${config.agent.mission}`,
     'You operate conservatively. Your job is to observe, reason, and act only through the provided tools.',
     'Never claim that you executed a swap, deposit, or borrow unless the tool result says it executed.',
-    'Prefer read-only monitoring and concise summaries. Do not ask for private keys.',
     'Respect local policy gates: dry-run mode and swap execution flags are final.',
     'Always start each cycle by calling inspect_runtime_policy.',
-    'If a wallet is configured and Fluid lending is enabled, always call get_fluid_positions AND get_fluid_markets. Both are read-only and do not require any allowlisted markets.',
-    'When deciding where to deposit, compare get_fluid_markets totalApr across allowlisted fTokens (higher is better). stakingApr and merkleRewardsApr are additive extras not included in totalApr.',
-    'Use create_fluid_position only when it is clearly justified, explicitly allowed by runtime policy, and the target market/amount are concrete.',
+    'Call get_agent_memory early to see prior deposits, pending tasks, and deposit cooldown status.',
+    'If a wallet is configured and Fluid lending is enabled, call get_fluid_positions AND get_fluid_markets.',
+    'Call get_wallet_balances before any deposit to see idle USDC and treasury hints.',
+    'When deciding where to deposit, compare get_fluid_markets totalApr across allowlisted fTokens (higher is better). stakingApr and merkleRewardsApr are extras not in totalApr.',
+    'If memory shows pending tweet_deposit, do NOT call create_fluid_position; use post_deposit_update instead (or report not implemented).',
+    'Deposits are recorded automatically in agent memory; do not duplicate deposits within the cooldown window.',
     'If an action is blocked, explain the blocker and the next configuration change needed.',
     'Keep final summaries short and operational: observations, attempted actions, blocked actions, next check.'
-  ].join('\n');
+  ];
+
+  if (treasuryModeEnabled(config)) {
+    lines.push(
+      'Treasury mode is ON: when USDC balance meets MIN_IDLE_USDC_RAW and memory allows, call create_fluid_position into the highest-APR allowlisted market (usually fUSDC via market usdc) using depositableRaw from get_wallet_balances, capped by FLUID_MAX_SUPPLY_AMOUNT_RAW.',
+      'After a confirmed deposit, memory will queue tweet_deposit; attempt post_deposit_update when appropriate.'
+    );
+  } else {
+    lines.push('Prefer read-only monitoring when dry-run or position creation is disabled.');
+  }
+
+  return lines.join('\n');
 }
 
 function buildRunPrompt(config: AppConfig): string {
+  const cycleType = treasuryModeEnabled(config) ? 'treasury' : 'monitoring';
+
+  const toolOrder = treasuryModeEnabled(config)
+    ? 'inspect_runtime_policy → get_agent_memory → get_fluid_positions → get_fluid_markets → get_wallet_balances → (create_fluid_position OR post_deposit_update if pending)'
+    : 'inspect_runtime_policy → get_agent_memory → get_fluid_positions → get_fluid_markets';
+
   return [
-    'Run one autonomous DeFi monitoring cycle.',
+    `Run one autonomous DeFi ${cycleType} cycle.`,
     `Wallet: ${config.agent.walletAddress || '(not configured)'}`,
     `Dry run: ${config.runtime.dryRun}`,
     `Fluid lending enabled: ${config.fluid.enabled}`,
+    `Fluid position creation: ${config.fluid.enablePositionCreation}`,
     `Swap quotes enabled: ${config.swap.enableQuotes}`,
     `Autonomous swaps enabled: ${config.swap.enableAutonomousSwaps}`,
-    'First inspect runtime policy. Then load Fluid positions and Fluid markets (get_fluid_markets). Report markets ranked by totalApr, note the top allowlisted candidate for idle funds, and include fToken addresses/APRs so the operator can configure FLUID_ALLOWED_FTOKENS.'
+    `Suggested tool order: ${toolOrder}.`,
+    'Report memory pending tasks, ranked markets by totalApr, wallet USDC, and any deposit or tweet attempts.'
   ].join('\n');
 }
 

@@ -1,3 +1,11 @@
+import {
+  BASE_USDC_ADDRESS,
+  getMemorySummary,
+  recordDeposit,
+  shouldSkipDeposit,
+  updateSnapshots,
+  type AgentStateV1
+} from './agentMemory.js';
 import { evaluateActionPolicy } from './policy.js';
 import type {
   AgentAction,
@@ -10,17 +18,30 @@ import type {
   SwapRoute
 } from '../types.js';
 
+export interface AgentMemoryContext {
+  state: AgentStateV1;
+  runId: string;
+  statePath: string;
+  persist: () => void;
+}
+
 interface ToolRegistryOptions {
   config: AppConfig;
   clients: Clients;
   logger: Logger;
+  memory: AgentMemoryContext;
 }
 
 type ToolArgs = Record<string, unknown>;
 type ToolHandler = (args: ToolArgs) => Promise<Record<string, unknown>>;
 
-export function createToolRegistry({ config, clients, logger }: ToolRegistryOptions) {
+export function createToolRegistry({ config, clients, logger, memory }: ToolRegistryOptions) {
   const handlers: Record<string, ToolHandler> = {
+    get_agent_memory: async () => ({
+      ok: true,
+      memory: getMemorySummary(memory.state, config, memory.runId)
+    }),
+
     get_fluid_positions: async () => {
       if (!config.agent.walletAddress) {
         return { ok: false, error: 'AGENT_WALLET_ADDRESS is not configured' };
@@ -31,16 +52,86 @@ export function createToolRegistry({ config, clients, logger }: ToolRegistryOpti
       }
 
       const result = await clients.fluid.getPositions(config.agent.walletAddress);
+      updateSnapshots(memory.state, { lastFluidPositions: result });
+      memory.persist();
       return { ok: true, wallet: config.agent.walletAddress, ...result };
     },
 
+    get_wallet_balances: async () => {
+      if (!config.agent.walletAddress) {
+        return { ok: false, error: 'AGENT_WALLET_ADDRESS is not configured' };
+      }
+
+      if (!config.evm.baseRpcUrl) {
+        return { ok: false, error: 'BASE_RPC_URL is required to read wallet balances' };
+      }
+
+      const balances = await clients.fluidExecution.getWalletBalances(config.agent.walletAddress);
+      const usdcRaw = BigInt(balances.usdc.raw);
+      const hints = buildDepositHints(config, usdcRaw, memory.state);
+
+      updateSnapshots(memory.state, { lastUsdcBalanceRaw: balances.usdc.raw });
+      memory.persist();
+
+      return {
+        ok: true,
+        ...balances,
+        baseUsdcAddress: BASE_USDC_ADDRESS,
+        treasury: hints
+      };
+    },
+
     create_fluid_position: async (args) => {
+      const fTokenAddress = resolveFTokenAddress(args, config);
+      const rawAmount = readStringArg(args.rawAmount, '0');
+      const underlyingTokenAddress =
+        typeof args.underlyingTokenAddress === 'string'
+          ? args.underlyingTokenAddress
+          : BASE_USDC_ADDRESS;
+
+      const memorySkip = shouldSkipDeposit(memory.state, config, fTokenAddress);
+      if (memorySkip.skip) {
+        return { ok: false, blocked: true, reason: memorySkip.reason, dryRun: config.runtime.dryRun };
+      }
+
+      if (!config.evm.baseRpcUrl) {
+        return { ok: false, blocked: true, reason: 'BASE_RPC_URL is missing', dryRun: config.runtime.dryRun };
+      }
+
+      if (config.agent.walletAddress) {
+        const balances = await clients.fluidExecution.getWalletBalances(config.agent.walletAddress);
+        const usdcRaw = BigInt(balances.usdc.raw);
+        const amount = BigInt(rawAmount);
+
+        if (amount <= 0n) {
+          return { ok: false, blocked: true, reason: 'rawAmount must be greater than zero', dryRun: config.runtime.dryRun };
+        }
+
+        if (usdcRaw < config.fluid.minIdleUsdcRaw) {
+          return {
+            ok: false,
+            blocked: true,
+            reason: `Wallet USDC balance ${balances.usdc.formatted} is below MIN_IDLE_USDC_RAW`,
+            dryRun: config.runtime.dryRun
+          };
+        }
+
+        if (amount > usdcRaw) {
+          return {
+            ok: false,
+            blocked: true,
+            reason: `rawAmount exceeds wallet USDC balance (${balances.usdc.raw})`,
+            dryRun: config.runtime.dryRun
+          };
+        }
+      }
+
       const action: AgentAction = {
         type: 'FLUID_SUPPLY',
         details: {
-          fTokenAddress: resolveFTokenAddress(args, config),
-          rawAmount: readStringArg(args.rawAmount, '0'),
-          underlyingTokenAddress: typeof args.underlyingTokenAddress === 'string' ? args.underlyingTokenAddress : undefined,
+          fTokenAddress,
+          rawAmount,
+          underlyingTokenAddress,
           isNativeUnderlying: readBooleanArg(args.isNativeUnderlying, false),
           symbol: typeof args.symbol === 'string' ? args.symbol : undefined
         }
@@ -52,6 +143,17 @@ export function createToolRegistry({ config, clients, logger }: ToolRegistryOpti
 
       const details = action.details ?? {};
       if (config.runtime.dryRun) {
+        const deposit = recordDeposit(memory.state, {
+          runId: memory.runId,
+          fToken: String(details.fTokenAddress),
+          rawAmount: String(details.rawAmount),
+          ...(typeof details.symbol === 'string' ? { symbol: details.symbol } : {}),
+          underlying: underlyingTokenAddress,
+          status: 'planned',
+          dryRun: true
+        });
+        memory.persist();
+
         return {
           ok: true,
           dryRun: true,
@@ -60,7 +162,8 @@ export function createToolRegistry({ config, clients, logger }: ToolRegistryOpti
             underlyingTokenAddress: details.underlyingTokenAddress,
             rawAmount: details.rawAmount,
             isNativeUnderlying: details.isNativeUnderlying ?? false
-          }
+          },
+          recordedDepositId: deposit.id
         };
       }
 
@@ -68,12 +171,48 @@ export function createToolRegistry({ config, clients, logger }: ToolRegistryOpti
       const result = await clients.fluidExecution.supplyToFluid({
         fTokenAddress: String(details.fTokenAddress),
         rawAmount: String(details.rawAmount),
-        underlyingTokenAddress:
-          typeof details.underlyingTokenAddress === 'string' ? details.underlyingTokenAddress : undefined,
+        underlyingTokenAddress,
         isNativeUnderlying: Boolean(details.isNativeUnderlying)
       });
 
-      return { ok: true, dryRun: false, result };
+      const txHash = typeof result.txHash === 'string' ? result.txHash : undefined;
+      const deposit = recordDeposit(memory.state, {
+        runId: memory.runId,
+        fToken: String(details.fTokenAddress),
+        rawAmount: String(details.rawAmount),
+        ...(typeof details.symbol === 'string' ? { symbol: details.symbol } : {}),
+        underlying: underlyingTokenAddress,
+        status: 'confirmed',
+        ...(txHash ? { txHash } : {}),
+        dryRun: false
+      });
+      memory.persist();
+
+      return {
+        ok: true,
+        dryRun: false,
+        recordedDepositId: deposit.id,
+        pendingTweet: memory.state.pending.some((task) => task.depositId === deposit.id),
+        result
+      };
+    },
+
+    post_deposit_update: async (args) => {
+      const depositId = typeof args.depositId === 'string' ? args.depositId : undefined;
+      const pending = memory.state.pending.find((task) => task.type === 'tweet_deposit');
+
+      if (!depositId && !pending) {
+        return { ok: false, error: 'No pending tweet_deposit task and no depositId provided' };
+      }
+
+      const targetDepositId = depositId ?? pending?.depositId;
+      return {
+        ok: false,
+        notImplemented: true,
+        error: 'X/MoltX posting is not wired yet. depositId recorded in memory for a future cycle.',
+        depositId: targetDepositId,
+        hint: 'When implemented, this tool will post and call recordTweet to clear pending.'
+      };
     },
 
     get_swap_quote: async (args) => {
@@ -124,6 +263,14 @@ export function createToolRegistry({ config, clients, logger }: ToolRegistryOpti
         totalAssets: m.totalAssets
       }));
 
+      if (ranked[0]) {
+        updateSnapshots(memory.state, {
+          lastTopMarketSymbol: ranked[0].symbol,
+          lastTopMarketFToken: ranked[0].fToken
+        });
+        memory.persist();
+      }
+
       return {
         ok: true,
         chain,
@@ -159,23 +306,34 @@ export function createToolRegistry({ config, clients, logger }: ToolRegistryOpti
       }
     },
 
-    inspect_runtime_policy: async () => ({
-      ok: true,
-      policy: {
-        dryRun: config.runtime.dryRun,
-        accountMode: config.evm.accountMode,
-        smartAccountType: config.evm.accountMode === 'smart' ? config.evm.smartAccountType : undefined,
-        enableSwapQuotes: config.swap.enableQuotes,
-        enableAutonomousSwaps: config.swap.enableAutonomousSwaps,
-        enableFluidLending: config.fluid.enabled,
-        enableFluidPositionCreation: config.fluid.enablePositionCreation,
-        maxSlippagePercent: config.swap.maxSlippagePercent,
-        maxPriceImpactPercent: config.swap.maxPriceImpactPercent,
-        maxFluidSupplyAmountRaw: config.fluid.maxSupplyAmountRaw.toString(),
-        allowedFTokens: config.fluid.allowedFTokens,
-        configuredDefaultFTokens: config.fluid.defaultFTokens
-      }
-    })
+    inspect_runtime_policy: async () => {
+      const treasuryEnabled =
+        !config.runtime.dryRun && config.fluid.enabled && config.fluid.enablePositionCreation;
+
+      return {
+        ok: true,
+        policy: {
+          dryRun: config.runtime.dryRun,
+          accountMode: config.evm.accountMode,
+          smartAccountType: config.evm.accountMode === 'smart' ? config.evm.smartAccountType : undefined,
+          enableSwapQuotes: config.swap.enableQuotes,
+          enableAutonomousSwaps: config.swap.enableAutonomousSwaps,
+          enableFluidLending: config.fluid.enabled,
+          enableFluidPositionCreation: config.fluid.enablePositionCreation,
+          autoDepositIntent: treasuryEnabled,
+          maxSlippagePercent: config.swap.maxSlippagePercent,
+          maxPriceImpactPercent: config.swap.maxPriceImpactPercent,
+          minIdleUsdcRaw: config.fluid.minIdleUsdcRaw.toString(),
+          maxFluidSupplyAmountRaw: config.fluid.maxSupplyAmountRaw.toString(),
+          depositCooldownMs: config.agent.depositCooldownMs,
+          baseUsdcAddress: BASE_USDC_ADDRESS,
+          allowedFTokens: config.fluid.allowedFTokens,
+          configuredDefaultFTokens: config.fluid.defaultFTokens,
+          agentStatePath: memory.statePath
+        },
+        memory: getMemorySummary(memory.state, config, memory.runId)
+      };
+    }
   };
 
   return {
@@ -205,12 +363,50 @@ export function createToolRegistry({ config, clients, logger }: ToolRegistryOpti
   };
 }
 
+function buildDepositHints(config: AppConfig, usdcRaw: bigint, state: AgentStateV1) {
+  const skip = shouldSkipDeposit(state, config);
+  const meetsMin = usdcRaw >= config.fluid.minIdleUsdcRaw;
+  const canDeposit = !skip.skip && meetsMin;
+  const depositableRaw = canDeposit
+    ? usdcRaw < config.fluid.maxSupplyAmountRaw
+      ? usdcRaw
+      : config.fluid.maxSupplyAmountRaw
+    : 0n;
+
+  return {
+    minIdleUsdcRaw: config.fluid.minIdleUsdcRaw.toString(),
+    maxSupplyAmountRaw: config.fluid.maxSupplyAmountRaw.toString(),
+    usdcBalanceRaw: usdcRaw.toString(),
+    canDeposit,
+    depositableRaw: depositableRaw.toString(),
+    suggestedMarket: 'usdc',
+    suggestedFToken: config.fluid.defaultFTokens.usdc || null,
+    suggestedUnderlying: BASE_USDC_ADDRESS,
+    depositSkipReason: skip.reason,
+    reason: !canDeposit
+      ? skip.reason ?? (meetsMin ? null : 'USDC balance below MIN_IDLE_USDC_RAW')
+      : null
+  };
+}
+
 function definitions(): OpenAIToolDefinition[] {
   return [
     {
       type: 'function',
       name: 'inspect_runtime_policy',
-      description: 'Inspect local runtime safety policy and enabled actions.',
+      description: 'Inspect local runtime safety policy, treasury thresholds, and agent memory summary.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {},
+        required: []
+      }
+    },
+    {
+      type: 'function',
+      name: 'get_agent_memory',
+      description:
+        'Read persistent agent memory: prior runs, deposits, pending tasks (e.g. tweet after deposit), and snapshots.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -231,8 +427,21 @@ function definitions(): OpenAIToolDefinition[] {
     },
     {
       type: 'function',
+      name: 'get_wallet_balances',
+      description:
+        'Read Base wallet ETH and USDC balances with deposit hints (min idle, max supply, canDeposit, suggested fUSDC market).',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {},
+        required: []
+      }
+    },
+    {
+      type: 'function',
       name: 'create_fluid_position',
-      description: 'Create or add to a Fluid lending position on Base by approving the underlying token and depositing into the specified fToken market. Only call when policy allows and only with a configured allowlisted market.',
+      description:
+        'Supply into a Fluid fToken on Base (approve + deposit). Blocked while tweet_deposit is pending or within deposit cooldown. Use market usdc with FLUID_USDC_FTOKEN configured.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -248,7 +457,7 @@ function definitions(): OpenAIToolDefinition[] {
           },
           underlyingTokenAddress: {
             type: 'string',
-            description: 'Underlying ERC-20 token address. Omit only for native ETH deposits.'
+            description: 'Underlying ERC-20 token address. Defaults to Base USDC.'
           },
           rawAmount: {
             type: 'string',
@@ -264,6 +473,21 @@ function definitions(): OpenAIToolDefinition[] {
           }
         },
         required: ['rawAmount']
+      }
+    },
+    {
+      type: 'function',
+      name: 'post_deposit_update',
+      description:
+        'Post a status update about a recorded deposit (e.g. to X). Use when memory shows pending tweet_deposit. Not fully implemented yet.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          depositId: { type: 'string', description: 'Deposit id from agent memory or create_fluid_position result.' },
+          text: { type: 'string', description: 'Optional draft post text.' }
+        },
+        required: []
       }
     },
     {
@@ -318,7 +542,7 @@ function definitions(): OpenAIToolDefinition[] {
         },
         required: []
       }
-    },
+    }
   ];
 }
 
