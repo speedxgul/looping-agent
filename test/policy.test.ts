@@ -25,6 +25,11 @@ const baseConfig: AppConfig = {
   moltx: {
     apiBase: 'https://moltx.io/v1'
   },
+  x: {
+    enablePosting: false,
+    userAccessToken: '',
+    apiBase: 'https://api.x.com'
+  },
   swap: {
     baseUrl: 'https://swap.moltx.io',
     enableQuotes: true,

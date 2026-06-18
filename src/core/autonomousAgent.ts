@@ -159,7 +159,7 @@ function buildInstructions(config: AppConfig): string {
     'If a wallet is configured and Fluid lending is enabled, call get_fluid_positions AND get_fluid_markets.',
     'Call get_wallet_balances before any deposit to see idle USDC and treasury hints.',
     'When deciding where to deposit, compare get_fluid_markets totalApr across allowlisted fTokens (higher is better). stakingApr and merkleRewardsApr are extras not in totalApr.',
-    'If memory shows pending tweet_deposit, do NOT call create_fluid_position; use post_deposit_update instead (or report not implemented).',
+    'If memory shows pending tweet_deposit, do NOT call create_fluid_position; use post_deposit_update instead. If X posting is blocked, report the config blocker.',
     'Deposits are recorded automatically in agent memory; do not duplicate deposits within the cooldown window.',
     'If an action is blocked, explain the blocker and the next configuration change needed.',
     'Keep final summaries short and operational: observations, attempted actions, blocked actions, next check.'

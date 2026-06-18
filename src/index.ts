@@ -6,6 +6,7 @@ import { MoltxSwapClient } from './clients/moltxSwapClient.js';
 import { FluidClient } from './clients/fluidClient.js';
 import { FluidExecutionClient } from './clients/fluidExecutionClient.js';
 import { OpenAIResponsesClient } from './clients/openaiResponsesClient.js';
+import { XClient } from './clients/xClient.js';
 import { createAutonomousAgent } from './core/autonomousAgent.js';
 import type { AppConfig, Clients, Logger } from './types.js';
 
@@ -40,6 +41,11 @@ async function main() {
       apiKey: config.openai.apiKey,
       baseUrl: config.openai.baseUrl,
       model: config.openai.model,
+      logger
+    }),
+    x: new XClient({
+      apiBase: config.x.apiBase,
+      userAccessToken: config.x.userAccessToken,
       logger
     })
   };
@@ -93,6 +99,7 @@ function runDoctor(config: AppConfig, logger: Logger): void {
   logger.info(`Fluid position creation enabled: ${config.fluid.enablePositionCreation}`);
   logger.info(`Swap quotes enabled: ${config.swap.enableQuotes}`);
   logger.info(`Autonomous swaps enabled: ${config.swap.enableAutonomousSwaps}`);
+  logger.info(`X posting enabled: ${config.x.enablePosting}`);
 
   if (!config.agent.walletAddress || config.agent.walletAddress === '0x0000000000000000000000000000000000000000') {
     logger.warn('Set AGENT_WALLET_ADDRESS before expecting meaningful live DeFi reads.');
@@ -132,6 +139,10 @@ function runDoctor(config: AppConfig, logger: Logger): void {
 
   if (!config.runtime.dryRun) {
     logger.warn('DRY_RUN=false. Write actions can execute if their specific enable flags are also true.');
+  }
+
+  if (config.x.enablePosting && !config.x.userAccessToken) {
+    logger.warn('ENABLE_X_POSTING=true but X_USER_ACCESS_TOKEN is empty.');
   }
 }
 
