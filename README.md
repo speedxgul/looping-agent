@@ -1,42 +1,43 @@
 # DeFi Agent v0
 
-An extensible v1 scaffold for an autonomous DeFi agent. OpenAI decides what to do, and local tool adapters perform bounded DeFi actions:
+An extensible v1 scaffold for an autonomous DeFi treasury agent on **Sui**. OpenAI decides what to do, and local tool adapters perform bounded lending actions:
 
-- reads Fluid positions through `https://defi.moltx.io/positions`
-- persists run history and deposit/tweet tasks in `data/agent-state.json`, or on **Walrus** as verifiable, portable blobs (see Walrus Memory & Verifiable Storage)
+- reads Suilend markets, obligations, and health factor via `@suilend/sdk`
+- compares supply/borrow APRs against NAVI and Scallop (read-only) when enabled
+- persists run history and position/tweet tasks in `data/agent-state.json`, or on **Walrus** as verifiable, portable blobs (see Walrus Memory & Verifiable Storage)
 - can carry **long-term semantic memory** across sessions and machines via **MemWal (Walrus Memory)**
-- reads Base wallet USDC/ETH balances and live Fluid APRs to pick allowlisted pools
-- can create Fluid lending positions on Base when signer config and policy flags are enabled
-- can post confirmed Fluid deposit updates to X when X posting is explicitly enabled
-- gets optional best-route swap quotes through `https://swap.moltx.io/swap`
-- keeps token-launch support as a separate adapter for later
+- reads Sui wallet USDC/SUI balances and live Suilend APRs to pick allowlisted assets
+- can supply, withdraw, borrow, and repay on Suilend when signer config and policy flags are enabled
+- auto-repays the largest borrow when health factor drops below `SUI_MIN_HEALTH_FACTOR` (before the LLM loop)
+- can post confirmed supply updates to X when X posting is explicitly enabled
+- gets optional best-route swap quotes through `https://swap.moltx.io/swap` (EVM-only; disabled by default on Sui)
 - defaults to `DRY_RUN=true`, so it will not post or execute transactions unless explicitly enabled
 
-This version does not require writing Solidity contracts. It is an off-chain agent that talks to existing protocols and APIs.
+This version does not require writing Move contracts. It is an off-chain agent that talks to existing protocols and APIs.
 
 ## Branches
 
-- **`base/fluid`** — frozen snapshot of this Base/Fluid (EVM) agent. Use it to reference or run the EVM version.
-- **`main`** — continues from the same codebase and is being evolved toward a **Sui-native** build. Expect the EVM execution layer to be swapped for the Sui TS SDK over time while the agent loop, memory, and tool-registry architecture stay the same.
+- **`base/fluid`** — frozen snapshot of the Base/Fluid (EVM) agent. Use it to reference or run the EVM version.
+- **`main` / `feat/sui-native`** — Sui-native build with Suilend execution, shared agent loop, memory, Walrus/MemWal, and X posting.
 
 ## Quick Start
 
 ```bash
 cp .env.example .env
-# set OPENAI_API_KEY and AGENT_WALLET_ADDRESS in .env
+# set OPENAI_API_KEY and AGENT_SUI_PRIVATE_KEY in .env
 bun run doctor
 bun run run:once
 ```
 
-Set `AGENT_WALLET_ADDRESS` before using live position checks.
+Set `AGENT_WALLET_ADDRESS` (or `AGENT_SUI_ADDRESS`) to the address derived from your Sui private key.
 
 ## Project Shape
 
 ```text
 src/
-  clients/        MoltX, Fluid, swap, X, OpenAI, and Walrus (blob + MemWal) clients
-  core/           autonomous agent loop, agent memory, memory store, policy, tools
-  utils/          config, http, amounts, private key, logging helpers
+  clients/        MoltX, Suilend, NAVI, Scallop, Sui execution, X, OpenAI, Walrus clients
+  core/           autonomous agent loop, agent memory, memory store, policy, health guard, tools
+  utils/          config, http, amounts, Sui private key, logging helpers
 scripts/
   memwal-keygen.ts   generate a MemWal delegate key
 data/
@@ -54,11 +55,12 @@ docs/
 `bun run run:once` performs one autonomous loop:
 
 1. Loads agent memory from the configured backend (local file or Walrus) and injects a summary into the prompt. When MemWal is enabled, relevant long-term memories are recalled and injected too.
-2. Calls OpenAI with tools and the configured mission. `recall_memory` and `remember_insight` let the model read/write durable cross-session memory on demand.
-3. Typical treasury cycle (when live): policy → memory → Fluid positions → markets (APRs) → wallet balances → optional deposit into top allowlisted fToken (e.g. fUSDC).
-4. Confirmed deposits are recorded in memory; a `tweet_deposit` pending task is queued until `post_deposit_update` successfully posts to X.
-5. Local policy and memory idempotency block duplicate deposits (pending tweet, cooldown).
-6. The model returns a final run summary; memory is saved for the next tick. On the Walrus backend, a Markdown run report is archived as a Walrus blob and a reflection is stored in MemWal.
+2. Runs the **health guard** when borrows exist: if health factor is below `SUI_MIN_HEALTH_FACTOR`, auto-repay executes (or records a planned repay in dry-run) before the LLM loop.
+3. Calls OpenAI with tools and the configured mission. `recall_memory` and `remember_insight` let the model read/write durable cross-session memory on demand.
+4. Typical treasury cycle (when live): policy → memory → Suilend obligation → rate comparison → markets → wallet balances → optional supply/withdraw/borrow/repay on Suilend.
+5. Confirmed supply actions are recorded in memory; a `tweet_action` pending task is queued until `post_action_update` successfully posts to X.
+6. Local policy and memory idempotency block duplicate writes (pending tweet, cooldown).
+7. The model returns a final run summary; memory is saved for the next tick. On the Walrus backend, a Markdown run report is archived as a Walrus blob and a reflection is stored in MemWal.
 
 For deployable autonomous operation:
 
@@ -71,44 +73,41 @@ The daemon runs one loop every `AUTONOMY_INTERVAL_MS`. Use a process manager, Do
 ## Safety Defaults
 
 - `DRY_RUN=true`
+- `SUI_NETWORK=testnet` (default)
 - `ENABLE_AUTONOMOUS_SWAPS=false`
-- `ENABLE_FLUID_POSITION_CREATION=false`
+- `ENABLE_SWAP_QUOTES=false`
+- `ENABLE_SUI_POSITION_CREATION=false`
+- `SUI_ENABLE_BORROW=false`
 - slippage and price impact checks are enforced before any future swap execution path
 
-To let the agent create Fluid positions, you also need:
+To let the agent create Suilend positions, you also need:
 
 ```bash
-ENABLE_FLUID_POSITION_CREATION=true
+ENABLE_SUI_POSITION_CREATION=true
 DRY_RUN=false
-ACCOUNT_MODE=smart
-BASE_RPC_URL=https://...
-AGENT_PRIVATE_KEY=0x...
-SMART_ACCOUNT_BUNDLER_URL=https://...
-FLUID_ALLOWED_FTOKENS=0xf42f5795D9ac7e9D757dB633D693cD548Cfd9169
-FLUID_USDC_FTOKEN=0xf42f5795D9ac7e9D757dB633D693cD548Cfd9169
+SUI_NETWORK=testnet
+SUI_RPC_URL=https://fullnode.testnet.sui.io:443
+AGENT_SUI_PRIVATE_KEY=0x...   # or suiprivkey1...
+AGENT_WALLET_ADDRESS=0x...  # must match derived address
+SUI_ALLOWED_ASSETS=usdc
+SUI_USDC_COIN_TYPE=0x5d4b302506645c37ff133b98c4b50a5ae14841659738d6d733d59d0d217a93bf::coin::COIN
 MIN_IDLE_USDC_RAW=5000000
-FLUID_MAX_SUPPLY_AMOUNT_RAW=10000000
+SUI_MAX_SUPPLY_AMOUNT_RAW=10000000
 ```
 
-Keep the allowed fToken list tight. This project is designed to approve and deposit only into explicitly allowlisted Fluid markets. Set `FLUID_USDC_FTOKEN` so the model can use `market: usdc` on `create_fluid_position`.
+Keep the allowed asset list tight. This project is designed to approve and act only on explicitly allowlisted Suilend markets.
 
-When `ACCOUNT_MODE=smart`, `AGENT_PRIVATE_KEY` is the owner key and `AGENT_WALLET_ADDRESS` must be the derived Coinbase Smart Account address on Base. You can derive it with:
+Derive your Sui address from the configured key:
 
 ```bash
 bun run account:address
 ```
 
-`AGENT_PRIVATE_KEY` must be a **hex private key** (`0x` + 64 hex chars), not a mnemonic or wallet address. If you only have a seed phrase:
-
-```bash
-bun derive-key.ts "your twelve or twenty four words here"
-```
-
-Use the `privateKey` for the path whose `address` matches `AGENT_WALLET_ADDRESS`.
+`AGENT_SUI_PRIVATE_KEY` must be a **hex private key** (`0x` + 64 hex chars) or a **`suiprivkey1…`** bech32 key — not a mnemonic or wallet address.
 
 ## X Posting
 
-`post_deposit_update` posts text-only deposit updates to X API v2 and clears the pending `tweet_deposit` task only after X returns a post id. This is gated separately from `DRY_RUN`.
+`post_action_update` posts text-only treasury updates to X API v2 and clears the pending `tweet_action` task only after X returns a post id. This is gated separately from `DRY_RUN`. `post_deposit_update` remains as a backward-compatible alias.
 
 ```bash
 ENABLE_X_POSTING=true
@@ -118,7 +117,7 @@ X_USER_ACCESS_TOKEN=...
 
 `X_USER_ACCESS_TOKEN` must be a preissued user-context access token for the X account that should post, with permission to create posts. This project does not implement OAuth 1.0a or OAuth 2.0 PKCE token issuance in v1.
 
-If `ENABLE_X_POSTING=false`, the token is missing, or the X API call fails, the pending task remains in memory so the agent cannot make another deposit until posting is configured or succeeds.
+If `ENABLE_X_POSTING=false`, the token is missing, or the X API call fails, the pending task remains in memory so the agent cannot make another supply until posting is configured or succeeds.
 
 ## Walrus Memory & Verifiable Storage
 
@@ -169,6 +168,14 @@ MEMWAL_NAMESPACE=defi-agent
 ```
 
 When enabled, each run recalls relevant memories into the prompt and, after the run, analyzes/stores a reflection. The model can also call `recall_memory` and `remember_insight` directly. Memory is best-effort: if disabled or unreachable, the agent runs normally without it.
+
+## Verification Checklist
+
+1. `bun run doctor` — Sui key, address, RPC, protocol flags
+2. `bun test` — unit tests pass
+3. **Testnet dry run:** `DRY_RUN=true SUI_NETWORK=testnet bun run run:once`
+4. **Testnet live (tiny caps):** supply → withdraw → borrow → repay with digests on suiscan testnet
+5. **Health guard:** borrow near limit → confirm auto-repay when HF drops
 
 ## OpenAI
 
