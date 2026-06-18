@@ -92,8 +92,8 @@ export function createAutonomousAgent({ config, clients, logger }: AutonomousAge
       }
 
       logger.info('Autonomous agent loop complete', {
-        output: result?.outputText || '(no text output)',
-        runId
+        runId,
+        reportChars: result?.outputText?.trim().length ?? 0
       });
 
       return result ?? { response: null, outputText: undefined };

@@ -110,9 +110,17 @@ async function main() {
   });
 
   const result = await agent.runOnce();
-  if (result.outputText) {
-    console.log('\n' + result.outputText + '\n');
+  printRunReport(result.outputText);
+}
+
+function printRunReport(outputText?: string): void {
+  const report = outputText?.trim();
+  if (!report) {
+    return;
   }
+
+  const divider = '═'.repeat(72);
+  process.stdout.write(`\n${divider}\n  AGENT RUN REPORT\n${divider}\n\n${report}\n\n${divider}\n\n`);
 }
 
 async function runDoctor(config: AppConfig, clients: Clients, logger: Logger): Promise<void> {
@@ -227,9 +235,7 @@ async function runDaemon({ config, clients, logger }: { config: AppConfig; clien
     running = true;
     try {
       const result = await agent.runOnce();
-      if (result.outputText) {
-        console.log('\n' + result.outputText + '\n');
-      }
+      printRunReport(result.outputText);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error('Autonomous daemon loop failed', { error: message });
