@@ -3,7 +3,8 @@
 An extensible v1 scaffold for an autonomous DeFi agent. OpenAI decides what to do, and local tool adapters perform bounded DeFi actions:
 
 - reads Fluid positions through `https://defi.moltx.io/positions`
-- persists run history and deposit/tweet tasks in `data/agent-state.json` (see agent memory)
+- persists run history and deposit/tweet tasks in `data/agent-state.json`, or on **Walrus** as verifiable, portable blobs (see Walrus Memory & Verifiable Storage)
+- can carry **long-term semantic memory** across sessions and machines via **MemWal (Walrus Memory)**
 - reads Base wallet USDC/ETH balances and live Fluid APRs to pick allowlisted pools
 - can create Fluid lending positions on Base when signer config and policy flags are enabled
 - can post confirmed Fluid deposit updates to X when X posting is explicitly enabled
@@ -28,11 +29,14 @@ Set `AGENT_WALLET_ADDRESS` before using live position checks.
 
 ```text
 src/
-  clients/        MoltX, Fluid, swap, and signing clients
-  core/           autonomous agent loop, agent memory, policy, tools
+  clients/        MoltX, Fluid, swap, signing, and Walrus (blob + MemWal) clients
+  core/           autonomous agent loop, agent memory, memory store, policy, tools
   utils/          config, http, amounts, logging helpers
+scripts/
+  memwal-keygen.ts   generate a MemWal delegate key
 data/
-  agent-state.json   persistent memory (gitignored)
+  agent-state.json   local persistent memory / Walrus cache (gitignored)
+  walrus-pointer.json latest Walrus state blob id (gitignored)
 docs/
   architecture.md runtime notes
   moltx.md        endpoint notes from live skill files
@@ -42,12 +46,12 @@ docs/
 
 `bun run run:once` performs one autonomous loop:
 
-1. Loads agent memory from `AGENT_STATE_PATH` and injects a summary into the prompt.
-2. Calls OpenAI with tools and the configured mission.
+1. Loads agent memory from the configured backend (local file or Walrus) and injects a summary into the prompt. When MemWal is enabled, relevant long-term memories are recalled and injected too.
+2. Calls OpenAI with tools and the configured mission. `recall_memory` and `remember_insight` let the model read/write durable cross-session memory on demand.
 3. Typical treasury cycle (when live): policy → memory → Fluid positions → markets (APRs) → wallet balances → optional deposit into top allowlisted fToken (e.g. fUSDC).
 4. Confirmed deposits are recorded in memory; a `tweet_deposit` pending task is queued until `post_deposit_update` successfully posts to X.
 5. Local policy and memory idempotency block duplicate deposits (pending tweet, cooldown).
-6. The model returns a final run summary; memory is saved for the next tick.
+6. The model returns a final run summary; memory is saved for the next tick. On the Walrus backend, a Markdown run report is archived as a Walrus blob and a reflection is stored in MemWal.
 
 For deployable autonomous operation:
 
@@ -108,6 +112,56 @@ X_USER_ACCESS_TOKEN=...
 `X_USER_ACCESS_TOKEN` must be a preissued user-context access token for the X account that should post, with permission to create posts. This project does not implement OAuth 1.0a or OAuth 2.0 PKCE token issuance in v1.
 
 If `ENABLE_X_POSTING=false`, the token is missing, or the X API call fails, the pending task remains in memory so the agent cannot make another deposit until posting is configured or succeeds.
+
+## Walrus Memory & Verifiable Storage
+
+The agent can use [Walrus](https://walrus.xyz) as a verifiable data platform for its memory, giving it three properties a single local file can't: durability, portability across machines, and verifiability. Defaults target Walrus **testnet** and the MemWal **staging** relayer, so no funded wallet is required to demo.
+
+There are two independent, additive layers:
+
+### 1. Verifiable state persistence (raw Walrus blobs)
+
+Switch the durable store from a local file to Walrus:
+
+```bash
+AGENT_MEMORY_BACKEND=walrus
+WALRUS_PUBLISHER_URL=https://publisher.walrus-testnet.walrus.space
+WALRUS_AGGREGATOR_URL=https://aggregator.walrus-testnet.walrus.space
+WALRUS_STATE_EPOCHS=5
+```
+
+On every durable save the full agent state is uploaded as a content-addressed blob via the publisher HTTP API; the latest blob id is tracked in `data/walrus-pointer.json`. A local cache (`data/agent-state.json`) mirrors every write, so non-durable updates stay fast and any Walrus outage falls back to the cache without failing a run. Each run also archives a Markdown report blob (an artifact) whose URL is recorded in memory.
+
+**Portability / restore demo:** copy the latest blob id (from the logs or `data/walrus-pointer.json`) onto a fresh machine and pin it — the agent rebuilds its full history from Walrus on the next run:
+
+```bash
+AGENT_MEMORY_BACKEND=walrus
+WALRUS_STATE_BLOB_ID=<blob id from a previous machine>
+bun run run:once
+```
+
+### 2. Semantic long-term memory (MemWal / Walrus Memory)
+
+MemWal adds encrypted, verifiable, semantic memory the agent recalls across sessions.
+
+1. Generate a delegate key:
+
+```bash
+bun run memwal:keygen
+```
+
+2. Create a MemWalAccount at `https://staging.memory.walrus.xyz` (testnet), register the printed delegate Sui address on it, and copy the account id.
+3. Configure `.env`:
+
+```bash
+MEMWAL_ENABLED=true
+MEMWAL_ACCOUNT_ID=0x...        # MemWalAccount object id
+MEMWAL_DELEGATE_KEY=...        # hex private key from memwal:keygen (keep secret)
+MEMWAL_RELAYER_URL=https://relayer-staging.memory.walrus.xyz
+MEMWAL_NAMESPACE=defi-agent
+```
+
+When enabled, each run recalls relevant memories into the prompt and, after the run, analyzes/stores a reflection. The model can also call `recall_memory` and `remember_insight` directly. Memory is best-effort: if disabled or unreachable, the agent runs normally without it.
 
 ## OpenAI
 

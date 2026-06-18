@@ -56,6 +56,20 @@ const baseConfig: AppConfig = {
     smartAccountType: 'coinbase',
     smartAccountBundlerUrl: '',
     smartAccountUsePaymaster: false
+  },
+  walrus: {
+    memoryBackend: 'file',
+    publisherUrl: 'https://publisher.walrus-testnet.walrus.space',
+    aggregatorUrl: 'https://aggregator.walrus-testnet.walrus.space',
+    epochs: 5,
+    stateBlobId: '',
+    memwal: {
+      enabled: false,
+      accountId: '',
+      delegateKey: '',
+      relayerUrl: 'https://relayer-staging.memory.walrus.xyz',
+      namespace: 'defi-agent'
+    }
   }
 };
 

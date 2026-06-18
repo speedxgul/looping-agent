@@ -7,6 +7,8 @@ import { FluidClient } from './clients/fluidClient.js';
 import { FluidExecutionClient } from './clients/fluidExecutionClient.js';
 import { OpenAIResponsesClient } from './clients/openaiResponsesClient.js';
 import { XClient } from './clients/xClient.js';
+import { WalrusBlobClient } from './clients/walrusBlobClient.js';
+import { WalrusMemoryClient } from './clients/walrusMemoryClient.js';
 import { createAutonomousAgent } from './core/autonomousAgent.js';
 import type { AppConfig, Clients, Logger } from './types.js';
 
@@ -46,6 +48,20 @@ async function main() {
     x: new XClient({
       apiBase: config.x.apiBase,
       userAccessToken: config.x.userAccessToken,
+      logger
+    }),
+    walrusBlob: new WalrusBlobClient({
+      publisherUrl: config.walrus.publisherUrl,
+      aggregatorUrl: config.walrus.aggregatorUrl,
+      epochs: config.walrus.epochs,
+      logger
+    }),
+    walrusMemory: new WalrusMemoryClient({
+      enabled: config.walrus.memwal.enabled,
+      accountId: config.walrus.memwal.accountId,
+      delegateKey: config.walrus.memwal.delegateKey,
+      relayerUrl: config.walrus.memwal.relayerUrl,
+      namespace: config.walrus.memwal.namespace,
       logger
     })
   };
@@ -100,6 +116,18 @@ function runDoctor(config: AppConfig, logger: Logger): void {
   logger.info(`Swap quotes enabled: ${config.swap.enableQuotes}`);
   logger.info(`Autonomous swaps enabled: ${config.swap.enableAutonomousSwaps}`);
   logger.info(`X posting enabled: ${config.x.enablePosting}`);
+  logger.info(`Memory backend: ${config.walrus.memoryBackend}`);
+  logger.info(`Walrus publisher: ${config.walrus.publisherUrl}`);
+  logger.info(`Walrus aggregator: ${config.walrus.aggregatorUrl}`);
+  logger.info(`Walrus Memory (MemWal) enabled: ${config.walrus.memwal.enabled}`);
+
+  if (config.walrus.memoryBackend === 'walrus' && !config.walrus.publisherUrl) {
+    logger.warn('AGENT_MEMORY_BACKEND=walrus but WALRUS_PUBLISHER_URL is empty.');
+  }
+
+  if (config.walrus.memwal.enabled && (!config.walrus.memwal.accountId || !config.walrus.memwal.delegateKey)) {
+    logger.warn('MEMWAL_ENABLED=true but MEMWAL_ACCOUNT_ID or MEMWAL_DELEGATE_KEY is empty. Semantic memory will be disabled.');
+  }
 
   if (!config.agent.walletAddress || config.agent.walletAddress === '0x0000000000000000000000000000000000000000') {
     logger.warn('Set AGENT_WALLET_ADDRESS before expecting meaningful live DeFi reads.');

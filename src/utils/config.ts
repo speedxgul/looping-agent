@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AppConfig, NetworkName } from '../types.js';
+import type { AppConfig, MemoryBackend, NetworkName } from '../types.js';
 import { normalizePrivateKey } from './privateKey.js';
 
 const DEFAULT_ENV_PATH = path.resolve(process.cwd(), '.env');
@@ -69,6 +69,20 @@ export function loadConfig(): AppConfig {
       smartAccountType: 'coinbase',
       smartAccountBundlerUrl: readString('SMART_ACCOUNT_BUNDLER_URL', ''),
       smartAccountUsePaymaster: readBoolean('SMART_ACCOUNT_USE_PAYMASTER', false)
+    },
+    walrus: {
+      memoryBackend: readMemoryBackend('AGENT_MEMORY_BACKEND', 'file'),
+      publisherUrl: readString('WALRUS_PUBLISHER_URL', 'https://publisher.walrus-testnet.walrus.space'),
+      aggregatorUrl: readString('WALRUS_AGGREGATOR_URL', 'https://aggregator.walrus-testnet.walrus.space'),
+      epochs: readNumber('WALRUS_STATE_EPOCHS', 5),
+      stateBlobId: readString('WALRUS_STATE_BLOB_ID', ''),
+      memwal: {
+        enabled: readBoolean('MEMWAL_ENABLED', false),
+        accountId: readString('MEMWAL_ACCOUNT_ID', ''),
+        delegateKey: readString('MEMWAL_DELEGATE_KEY', ''),
+        relayerUrl: readString('MEMWAL_RELAYER_URL', 'https://relayer-staging.memory.walrus.xyz'),
+        namespace: readString('MEMWAL_NAMESPACE', 'defi-agent')
+      }
     }
   };
 }
@@ -143,6 +157,15 @@ function readNetworkName(name: string, fallback: NetworkName): NetworkName {
   }
 
   throw new Error(`${name} must be one of ethereum, arbitrum, base, polygon, plasma`);
+}
+
+function readMemoryBackend(name: string, fallback: MemoryBackend): MemoryBackend {
+  const value = readString(name, fallback).toLowerCase();
+  if (value === 'file' || value === 'walrus') {
+    return value;
+  }
+
+  throw new Error(`${name} must be either file or walrus`);
 }
 
 function readAccountMode(name: string, fallback: 'eoa' | 'smart'): 'eoa' | 'smart' {
