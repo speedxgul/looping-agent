@@ -7,3 +7,4 @@ data/*.json
 !data/.gitkeep
 keeping-progress-track.txt
 derive-key.ts
+.cursor

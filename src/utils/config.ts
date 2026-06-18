@@ -1,12 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AppConfig, MemoryBackend, NetworkName } from '../types.js';
-import { normalizePrivateKey } from './privateKey.js';
+import type { AppConfig, MemoryBackend, NetworkName, SuiNetwork } from '../types.js';
+import { normalizeSuiPrivateKey } from './privateKey.js';
+import { defaultExplorerBaseUrl, defaultRpcUrl, defaultUsdcCoinType } from './suiNetwork.js';
 
 const DEFAULT_ENV_PATH = path.resolve(process.cwd(), '.env');
 
 export function loadConfig(): AppConfig {
   loadDotEnv(DEFAULT_ENV_PATH);
+
+  const network = readSuiNetwork('SUI_NETWORK', 'testnet');
+  const rpcUrl = readString('SUI_RPC_URL', defaultRpcUrl(network));
 
   return {
     runtime: {
@@ -16,14 +20,14 @@ export function loadConfig(): AppConfig {
     },
     logLevel: readString('LOG_LEVEL', 'info'),
     agent: {
-      name: readString('AGENT_NAME', 'StablecoinTreasuryAgent'),
+      name: readString('AGENT_NAME', 'SuiTreasuryAgent'),
       walletAddress: readString('AGENT_WALLET_ADDRESS', ''),
       mission: readString(
         'AGENT_MISSION',
-        'Monitor my Base wallet, explain Fluid lending state, find safe swap opportunities, and post concise status updates only when enabled.'
+        'Manage a Sui USDC treasury on Suilend: monitor markets and health factor, supply into best-yield allowlisted pools, borrow within safe limits, rebalance on Suilend, and post concise status updates when enabled.'
       ),
       statePath: readString('AGENT_STATE_PATH', 'data/agent-state.json'),
-      depositCooldownMs: readNumber('DEPOSIT_COOLDOWN_MS', 86400000)
+      actionCooldownMs: readNumber('ACTION_COOLDOWN_MS', readNumber('DEPOSIT_COOLDOWN_MS', 86400000))
     },
     openai: {
       apiKey: readString('OPENAI_API_KEY', ''),
@@ -41,8 +45,8 @@ export function loadConfig(): AppConfig {
     },
     swap: {
       baseUrl: readString('MOLTX_SWAP_BASE', 'https://swap.moltx.io'),
-      enableQuotes: readBoolean('ENABLE_SWAP_QUOTES', true),
-      enableAutonomousSwaps: readBoolean('ENABLE_AUTONOMOUS_SWAPS', true),
+      enableQuotes: readBoolean('ENABLE_SWAP_QUOTES', false),
+      enableAutonomousSwaps: readBoolean('ENABLE_AUTONOMOUS_SWAPS', false),
       quoteNetwork: readNetworkName('QUOTE_NETWORK', 'base'),
       quoteSellToken: readString('QUOTE_SELL_TOKEN', ''),
       quoteBuyToken: readString('QUOTE_BUY_TOKEN', ''),
@@ -50,25 +54,32 @@ export function loadConfig(): AppConfig {
       maxSlippagePercent: readNumber('MAX_SLIPPAGE_PERCENT', 0.5),
       maxPriceImpactPercent: readNumber('MAX_PRICE_IMPACT_PERCENT', 1)
     },
-    fluid: {
-      baseUrl: readString('MOLTX_DEFI_BASE', 'https://defi.moltx.io'),
-      enabled: readBoolean('ENABLE_FLUID_LENDING', true),
-      enablePositionCreation: readBoolean('ENABLE_FLUID_POSITION_CREATION', true),
-      minIdleUsdcRaw: BigInt(readString('MIN_IDLE_USDC_RAW', '5000000')),
-      maxSupplyAmountRaw: BigInt(readString('FLUID_MAX_SUPPLY_AMOUNT_RAW', '10000000')),
-      allowedFTokens: readCsv('FLUID_ALLOWED_FTOKENS'),
-      defaultFTokens: {
-        usdc: readString('FLUID_USDC_FTOKEN', ''),
-        weth: readString('FLUID_WETH_FTOKEN', '')
+    sui: {
+      enabled: readBoolean('ENABLE_SUI_LENDING', true),
+      enablePositionCreation: readBoolean('ENABLE_SUI_POSITION_CREATION', false),
+      enableBorrow: readBoolean('ENABLE_SUI_BORROW', false),
+      rpcUrl,
+      network,
+      privateKey: normalizeSuiPrivateKey(readString('AGENT_SUI_PRIVATE_KEY', '')),
+      walletAddress: readString('AGENT_WALLET_ADDRESS', ''),
+      usdcCoinType: readString('SUI_USDC_COIN_TYPE', defaultUsdcCoinType(network)),
+      suiCoinType: readString('SUI_COIN_TYPE', '0x2::sui::SUI'),
+      allowedAssets: readCsv('SUI_ALLOWED_ASSETS'),
+      allowedPools: readCsv('SUI_ALLOWED_POOLS'),
+      minIdleRaw: BigInt(readString('MIN_IDLE_USDC_RAW', '5000000')),
+      maxSupplyRaw: BigInt(readString('SUI_MAX_SUPPLY_AMOUNT_RAW', '10000000')),
+      maxBorrowRaw: BigInt(readString('SUI_MAX_BORROW_AMOUNT_RAW', '5000000')),
+      minHealthFactor: readNumber('SUI_MIN_HEALTH_FACTOR', 1.25),
+      explorerBaseUrl: readString('SUI_EXPLORER_TX_BASE', defaultExplorerBaseUrl(network)),
+      defaultAssets: {
+        usdc: readString('SUI_DEFAULT_USDC_ASSET', 'usdc'),
+        sui: readString('SUI_DEFAULT_SUI_ASSET', 'sui')
+      },
+      protocols: {
+        suilend: { enabled: readBoolean('ENABLE_SUILEND', true) },
+        navi: { enabled: readBoolean('ENABLE_NAVI_READS', true) },
+        scallop: { enabled: readBoolean('ENABLE_SCALLOP_READS', true) }
       }
-    },
-    evm: {
-      accountMode: readAccountMode('ACCOUNT_MODE', 'eoa'),
-      baseRpcUrl: readString('BASE_RPC_URL', ''),
-      privateKey: normalizePrivateKey(readString('AGENT_PRIVATE_KEY', '')),
-      smartAccountType: 'coinbase',
-      smartAccountBundlerUrl: readString('SMART_ACCOUNT_BUNDLER_URL', ''),
-      smartAccountUsePaymaster: readBoolean('SMART_ACCOUNT_USE_PAYMASTER', false)
     },
     walrus: {
       memoryBackend: readMemoryBackend('AGENT_MEMORY_BACKEND', 'file'),
@@ -124,7 +135,12 @@ function stripQuotes(value: string): string {
 }
 
 function readString(name: string, fallback: string): string {
-  return process.env[name] ?? fallback;
+  const value = process.env[name];
+  if (value === undefined || value === '') {
+    return fallback;
+  }
+
+  return value;
 }
 
 function readBoolean(name: string, fallback: boolean): boolean {
@@ -159,6 +175,15 @@ function readNetworkName(name: string, fallback: NetworkName): NetworkName {
   throw new Error(`${name} must be one of ethereum, arbitrum, base, polygon, plasma`);
 }
 
+function readSuiNetwork(name: string, fallback: SuiNetwork): SuiNetwork {
+  const value = readString(name, fallback).toLowerCase();
+  if (value === 'mainnet' || value === 'testnet' || value === 'devnet') {
+    return value;
+  }
+
+  throw new Error(`${name} must be one of mainnet, testnet, devnet`);
+}
+
 function readMemoryBackend(name: string, fallback: MemoryBackend): MemoryBackend {
   const value = readString(name, fallback).toLowerCase();
   if (value === 'file' || value === 'walrus') {
@@ -166,15 +191,6 @@ function readMemoryBackend(name: string, fallback: MemoryBackend): MemoryBackend
   }
 
   throw new Error(`${name} must be either file or walrus`);
-}
-
-function readAccountMode(name: string, fallback: 'eoa' | 'smart'): 'eoa' | 'smart' {
-  const value = readString(name, fallback);
-  if (value === 'eoa' || value === 'smart') {
-    return value;
-  }
-
-  throw new Error(`${name} must be either eoa or smart`);
 }
 
 function readCsv(name: string): string[] {
