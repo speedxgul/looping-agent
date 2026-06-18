@@ -9,6 +9,7 @@ import {
   type AgentStateV1
 } from './agentMemory.js';
 import { evaluateActionPolicy } from './policy.js';
+import type { SaveOptions } from './memoryStore.js';
 import { formatUnits } from '../utils/amounts.js';
 import type {
   AgentAction,
@@ -26,7 +27,7 @@ export interface AgentMemoryContext {
   state: AgentStateV1;
   runId: string;
   statePath: string;
-  persist: () => void;
+  persist: (opts?: SaveOptions) => Promise<void>;
 }
 
 interface ToolRegistryOptions {
@@ -46,6 +47,35 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
       memory: getMemorySummary(memory.state, config, memory.runId)
     }),
 
+    recall_memory: async (args) => {
+      const query = readStringArg(args.query, '');
+      if (!query.trim()) {
+        return { ok: false, error: 'query is required' };
+      }
+
+      if (!clients.walrusMemory.enabled) {
+        return { ok: false, enabled: false, reason: clients.walrusMemory.reason ?? 'Walrus Memory disabled', memories: [] };
+      }
+
+      const limit = Math.min(Math.max(readNumberArg(args.limit, 5), 1), 20);
+      const memories = await clients.walrusMemory.recall(query, limit);
+      return { ok: true, enabled: true, query, count: memories.length, memories };
+    },
+
+    remember_insight: async (args) => {
+      const text = readStringArg(args.text, '');
+      if (!text.trim()) {
+        return { ok: false, error: 'text is required' };
+      }
+
+      if (!clients.walrusMemory.enabled) {
+        return { ok: false, enabled: false, reason: clients.walrusMemory.reason ?? 'Walrus Memory disabled' };
+      }
+
+      const jobId = await clients.walrusMemory.remember(text);
+      return { ok: jobId !== null, enabled: true, jobId };
+    },
+
     get_fluid_positions: async () => {
       if (!config.agent.walletAddress) {
         return { ok: false, error: 'AGENT_WALLET_ADDRESS is not configured' };
@@ -57,7 +87,7 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
 
       const result = await clients.fluid.getPositions(config.agent.walletAddress);
       updateSnapshots(memory.state, { lastFluidPositions: result });
-      memory.persist();
+      await memory.persist({ durable: false });
       return { ok: true, wallet: config.agent.walletAddress, ...result };
     },
 
@@ -75,7 +105,7 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
       const hints = buildDepositHints(config, usdcRaw, memory.state);
 
       updateSnapshots(memory.state, { lastUsdcBalanceRaw: balances.usdc.raw });
-      memory.persist();
+      await memory.persist({ durable: false });
 
       return {
         ok: true,
@@ -156,7 +186,7 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
           status: 'planned',
           dryRun: true
         });
-        memory.persist();
+        await memory.persist({ durable: false });
 
         return {
           ok: true,
@@ -190,7 +220,7 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
         ...(txHash ? { txHash } : {}),
         dryRun: false
       });
-      memory.persist();
+      await memory.persist({ durable: true });
 
       return {
         ok: true,
@@ -259,7 +289,7 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
           externalId: post.id,
           text
         });
-        memory.persist();
+        await memory.persist({ durable: true });
 
         return {
           ok: true,
@@ -275,7 +305,7 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
           status: 'failed',
           text
         });
-        memory.persist();
+        await memory.persist({ durable: false });
 
         return {
           ok: false,
@@ -341,7 +371,7 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
           lastTopMarketSymbol: ranked[0].symbol,
           lastTopMarketFToken: ranked[0].fToken
         });
-        memory.persist();
+        await memory.persist({ durable: false });
       }
 
       return {
@@ -536,12 +566,41 @@ function definitions(): OpenAIToolDefinition[] {
       type: 'function',
       name: 'get_agent_memory',
       description:
-        'Read persistent agent memory: prior runs, deposits, pending tasks (e.g. tweet after deposit), and snapshots.',
+        'Read persistent agent memory: prior runs, deposits, pending tasks (e.g. tweet after deposit), snapshots, and recent Walrus artifact reports.',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {},
         required: []
+      }
+    },
+    {
+      type: 'function',
+      name: 'recall_memory',
+      description:
+        'Semantic recall from Walrus Memory (MemWal): search durable cross-session memories (past decisions, market observations, blockers) by natural-language query. Returns the most relevant memories with similarity distance (lower = closer).',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          query: { type: 'string', description: 'Natural-language search query.' },
+          limit: { type: 'number', minimum: 1, maximum: 20, description: 'Max memories to return (default 5).' }
+        },
+        required: ['query']
+      }
+    },
+    {
+      type: 'function',
+      name: 'remember_insight',
+      description:
+        'Store a durable insight in Walrus Memory (MemWal) for future runs, e.g. a noteworthy market observation, a decision rationale, or a recurring blocker. Keep it concise and factual.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          text: { type: 'string', description: 'The insight to remember.' }
+        },
+        required: ['text']
       }
     },
     {

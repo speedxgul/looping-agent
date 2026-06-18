@@ -4,7 +4,11 @@ import type { MoltxSocialClient } from './clients/moltxSocialClient.js';
 import type { MoltxSwapClient } from './clients/moltxSwapClient.js';
 import type { OpenAIResponsesClient } from './clients/openaiResponsesClient.js';
 import type { XClient } from './clients/xClient.js';
+import type { WalrusBlobClient } from './clients/walrusBlobClient.js';
+import type { WalrusMemoryClient } from './clients/walrusMemoryClient.js';
 import type { createLogger } from './utils/logger.js';
+
+export type MemoryBackend = 'file' | 'walrus';
 
 export type Logger = ReturnType<typeof createLogger>;
 
@@ -67,6 +71,30 @@ export interface AppConfig {
     smartAccountBundlerUrl: string;
     smartAccountUsePaymaster: boolean;
   };
+  walrus: {
+    /** Where the durable agent state lives: local file or Walrus blobs. */
+    memoryBackend: MemoryBackend;
+    /** Walrus HTTP publisher base URL (testnet by default). */
+    publisherUrl: string;
+    /** Walrus HTTP aggregator base URL (testnet by default). */
+    aggregatorUrl: string;
+    /** Number of Walrus storage epochs to persist each blob for. */
+    epochs: number;
+    /** Optional blob id to bootstrap/restore state from on a fresh machine. */
+    stateBlobId: string;
+    memwal: {
+      /** Enables MemWal semantic memory (recall/remember). */
+      enabled: boolean;
+      /** MemWalAccount object id on Sui. */
+      accountId: string;
+      /** Ed25519 delegate private key (hex). */
+      delegateKey: string;
+      /** MemWal relayer URL (staging by default). */
+      relayerUrl: string;
+      /** Namespace that isolates this agent's memories. */
+      namespace: string;
+    };
+  };
 }
 
 export interface Clients {
@@ -76,6 +104,8 @@ export interface Clients {
   fluidExecution: FluidExecutionClient;
   openai: OpenAIResponsesClient;
   x: XClient;
+  walrusBlob: WalrusBlobClient;
+  walrusMemory: WalrusMemoryClient;
 }
 
 export type NetworkName = 'ethereum' | 'arbitrum' | 'base' | 'polygon' | 'plasma';

@@ -52,6 +52,17 @@ export interface AgentSnapshots {
   lastTopMarketFToken?: string;
 }
 
+export type ArtifactKind = 'run_report' | 'state_snapshot';
+
+export interface AgentArtifactRecord {
+  runId: string;
+  kind: ArtifactKind;
+  blobId: string;
+  url: string;
+  createdAt: string;
+  description?: string;
+}
+
 export interface AgentStateV1 {
   version: 1;
   agentName: string;
@@ -64,6 +75,7 @@ export interface AgentStateV1 {
   };
   snapshots: AgentSnapshots;
   pending: AgentPendingTask[];
+  artifacts: AgentArtifactRecord[];
 }
 
 export interface AgentMemorySummary {
@@ -75,6 +87,7 @@ export interface AgentMemorySummary {
   recentRuns: AgentRunRecord[];
   snapshots: AgentSnapshots;
   depositSkipReason: string | null;
+  recentArtifacts: AgentArtifactRecord[];
 }
 
 export interface RecordDepositInput {
@@ -98,6 +111,7 @@ export interface RecordTweetInput {
 const MAX_RUNS = 50;
 const MAX_DEPOSITS = 100;
 const MAX_TWEETS = 50;
+const MAX_ARTIFACTS = 50;
 const SUMMARY_MAX_LENGTH = 2000;
 
 export function resolveAgentStatePath(config: AppConfig): string {
@@ -118,24 +132,24 @@ export function createEmptyAgentState(config: AppConfig): AgentStateV1 {
     runs: [],
     actions: { deposits: [], tweets: [] },
     snapshots: {},
-    pending: []
+    pending: [],
+    artifacts: []
   };
 }
 
-export function loadAgentState(config: AppConfig, statePath = resolveAgentStatePath(config)): AgentStateV1 {
-  if (!fs.existsSync(statePath)) {
-    return createEmptyAgentState(config);
-  }
-
-  const raw = fs.readFileSync(statePath, 'utf8');
-  const parsed = JSON.parse(raw) as Partial<AgentStateV1>;
+/**
+ * Validate and normalize a parsed state object (from any backend). Returns null
+ * when the payload is incompatible (wrong version, or a different wallet) so the
+ * caller can reset to an empty state.
+ */
+export function normalizeAgentState(config: AppConfig, parsed: Partial<AgentStateV1>): AgentStateV1 | null {
   if (parsed.version !== 1) {
-    return createEmptyAgentState(config);
+    return null;
   }
 
   const wallet = config.agent.walletAddress.toLowerCase();
   if (parsed.walletAddress && parsed.walletAddress !== wallet) {
-    return createEmptyAgentState(config);
+    return null;
   }
 
   return {
@@ -149,8 +163,19 @@ export function loadAgentState(config: AppConfig, statePath = resolveAgentStateP
       tweets: parsed.actions?.tweets ?? []
     },
     snapshots: parsed.snapshots ?? {},
-    pending: parsed.pending ?? []
+    pending: parsed.pending ?? [],
+    artifacts: parsed.artifacts ?? []
   };
+}
+
+export function loadAgentState(config: AppConfig, statePath = resolveAgentStatePath(config)): AgentStateV1 {
+  if (!fs.existsSync(statePath)) {
+    return createEmptyAgentState(config);
+  }
+
+  const raw = fs.readFileSync(statePath, 'utf8');
+  const parsed = JSON.parse(raw) as Partial<AgentStateV1>;
+  return normalizeAgentState(config, parsed) ?? createEmptyAgentState(config);
 }
 
 export function saveAgentState(statePath: string, state: AgentStateV1): void {
@@ -275,6 +300,20 @@ export function recordTweet(state: AgentStateV1, input: RecordTweetInput): Agent
   return record;
 }
 
+export function recordArtifact(
+  state: AgentStateV1,
+  input: Omit<AgentArtifactRecord, 'createdAt'>
+): AgentArtifactRecord {
+  const record: AgentArtifactRecord = {
+    ...input,
+    createdAt: new Date().toISOString()
+  };
+
+  state.artifacts.unshift(record);
+  state.artifacts = state.artifacts.slice(0, MAX_ARTIFACTS);
+  return record;
+}
+
 export function getMemorySummary(state: AgentStateV1, config: AppConfig, currentRunId?: string): AgentMemorySummary {
   const skip = shouldSkipDeposit(state, config);
   return {
@@ -285,7 +324,8 @@ export function getMemorySummary(state: AgentStateV1, config: AppConfig, current
     recentDeposits: state.actions.deposits.slice(0, 5),
     recentRuns: state.runs.slice(0, 3),
     snapshots: state.snapshots,
-    depositSkipReason: skip.skip ? skip.reason : null
+    depositSkipReason: skip.skip ? skip.reason : null,
+    recentArtifacts: state.artifacts.slice(0, 5)
   };
 }
 

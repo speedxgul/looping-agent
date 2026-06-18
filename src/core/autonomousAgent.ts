@@ -2,10 +2,11 @@ import {
   beginRun,
   endRun,
   getMemorySummary,
-  loadAgentState,
+  recordArtifact,
   resolveAgentStatePath,
-  saveAgentState
+  type AgentStateV1
 } from './agentMemory.js';
+import { createMemoryStore, type SaveOptions } from './memoryStore.js';
 import { createToolRegistry } from './toolRegistry.js';
 import type {
   AppConfig,
@@ -25,12 +26,13 @@ interface AutonomousAgentOptions {
 
 export function createAutonomousAgent({ config, clients, logger }: AutonomousAgentOptions) {
   const statePath = resolveAgentStatePath(config);
+  const store = createMemoryStore({ config, blobClient: clients.walrusBlob, logger });
 
   return {
     async runOnce() {
-      const state = loadAgentState(config, statePath);
+      const state = await store.load();
       const runId = beginRun(state);
-      const persist = () => saveAgentState(statePath, state);
+      const persist = (opts?: SaveOptions) => store.save(state, opts);
 
       const toolRegistry = createToolRegistry({
         config,
@@ -43,10 +45,13 @@ export function createAutonomousAgent({ config, clients, logger }: AutonomousAge
         agent: config.agent.name,
         model: config.openai.model,
         dryRun: config.runtime.dryRun,
+        memoryBackend: config.walrus.memoryBackend,
+        walrusMemory: clients.walrusMemory.enabled,
         runId,
         statePath
       });
 
+      const recalled = await recallLongTermMemory({ clients, config });
       const input: OpenAIInputItem[] = [
         {
           role: 'user',
@@ -57,7 +62,10 @@ export function createAutonomousAgent({ config, clients, logger }: AutonomousAge
                 buildRunPrompt(config),
                 '---',
                 'Agent memory (from prior runs):',
-                JSON.stringify(getMemorySummary(state, config, runId), null, 2)
+                JSON.stringify(getMemorySummary(state, config, runId), null, 2),
+                ...(recalled
+                  ? ['---', 'Relevant long-term memories (Walrus Memory / MemWal):', recalled]
+                  : [])
               ].join('\n')
             }
           ]
@@ -75,7 +83,8 @@ export function createAutonomousAgent({ config, clients, logger }: AutonomousAge
         });
       } finally {
         endRun(state, runId, result?.outputText);
-        persist();
+        await finalizeRun({ state, runId, outputText: result?.outputText, clients, config, logger });
+        await persist({ durable: true });
       }
 
       logger.info('Autonomous agent loop complete', {
@@ -86,6 +95,129 @@ export function createAutonomousAgent({ config, clients, logger }: AutonomousAge
       return result ?? { response: null, outputText: undefined };
     }
   };
+}
+
+/** Pull relevant cross-session memories from MemWal to seed the run prompt. */
+async function recallLongTermMemory({
+  clients,
+  config
+}: {
+  clients: Clients;
+  config: AppConfig;
+}): Promise<string | null> {
+  if (!clients.walrusMemory.enabled) {
+    return null;
+  }
+
+  const wallet = config.agent.walletAddress || 'the configured agent';
+  const query = `Past DeFi treasury decisions, deposits, market APRs, and blockers for wallet ${wallet}`;
+  const memories = await clients.walrusMemory.recall(query, 5);
+  if (memories.length === 0) {
+    return null;
+  }
+
+  return memories.map((memory, index) => `${index + 1}. (distance ${memory.distance.toFixed(3)}) ${memory.text}`).join('\n');
+}
+
+/**
+ * After a run: archive a verifiable report on Walrus and persist a reflection to
+ * MemWal so future runs recall what happened. Best-effort — never throws.
+ */
+async function finalizeRun({
+  state,
+  runId,
+  outputText,
+  clients,
+  config,
+  logger
+}: {
+  state: AgentStateV1;
+  runId: string;
+  outputText: string | undefined;
+  clients: Clients;
+  config: AppConfig;
+  logger: Logger;
+}): Promise<void> {
+  const summary = outputText?.trim();
+  if (!summary) {
+    return;
+  }
+
+  if (config.walrus.memoryBackend === 'walrus') {
+    try {
+      const report = buildRunReport({ state, runId, config, outputText: summary });
+      const stored = await clients.walrusBlob.storeString(report);
+      recordArtifact(state, {
+        runId,
+        kind: 'run_report',
+        blobId: stored.blobId,
+        url: stored.url,
+        description: 'Autonomous run report'
+      });
+      logger.info('Stored run report on Walrus', { blobId: stored.blobId, url: stored.url });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn('Failed to store run report on Walrus', { error: message });
+    }
+  }
+
+  if (clients.walrusMemory.enabled) {
+    const factCount = await clients.walrusMemory.analyze(summary);
+    if (factCount === 0) {
+      await clients.walrusMemory.remember(`Run ${runId} summary: ${summary}`);
+    } else {
+      logger.info('Stored run insights in Walrus Memory', { factCount, runId });
+    }
+  }
+}
+
+function buildRunReport({
+  state,
+  runId,
+  config,
+  outputText
+}: {
+  state: AgentStateV1;
+  runId: string;
+  config: AppConfig;
+  outputText: string;
+}): string {
+  const summary = getMemorySummary(state, config, runId);
+  const deposits = summary.recentDeposits.length
+    ? summary.recentDeposits
+        .map(
+          (deposit) =>
+            `- ${deposit.status} ${deposit.rawAmount} into ${deposit.fToken}` +
+            `${deposit.txHash ? ` (tx ${deposit.txHash})` : ''}${deposit.dryRun ? ' [dry-run]' : ''}`
+        )
+        .join('\n')
+    : '- none';
+  const pending = summary.pending.length
+    ? summary.pending.map((task) => `- ${task.type} (${task.depositId})`).join('\n')
+    : '- none';
+
+  return [
+    `# ${config.agent.name} — Run Report`,
+    '',
+    `- Run id: ${runId}`,
+    `- Wallet: ${state.walletAddress}`,
+    `- Generated: ${new Date().toISOString()}`,
+    `- Dry run: ${config.runtime.dryRun}`,
+    `- Top market: ${summary.snapshots.lastTopMarketSymbol ?? 'n/a'}`,
+    '',
+    '## Outcome',
+    '',
+    outputText,
+    '',
+    '## Recent deposits',
+    '',
+    deposits,
+    '',
+    '## Pending tasks',
+    '',
+    pending,
+    ''
+  ].join('\n');
 }
 
 interface ToolLoopOptions {
@@ -156,6 +288,7 @@ function buildInstructions(config: AppConfig): string {
     'Respect local policy gates: dry-run mode and swap execution flags are final.',
     'Always start each cycle by calling inspect_runtime_policy.',
     'Call get_agent_memory early to see prior deposits, pending tasks, and deposit cooldown status.',
+    'When useful, call recall_memory to retrieve durable cross-session context (past decisions, market notes, blockers) from Walrus Memory, and remember_insight to store a concise, durable insight worth recalling next run.',
     'If a wallet is configured and Fluid lending is enabled, call get_fluid_positions AND get_fluid_markets.',
     'Call get_wallet_balances before any deposit to see idle USDC and treasury hints.',
     'When deciding where to deposit, compare get_fluid_markets totalApr across allowlisted fTokens (higher is better). stakingApr and merkleRewardsApr are extras not in totalApr.',
