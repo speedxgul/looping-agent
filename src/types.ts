@@ -3,6 +3,7 @@ import type { FluidExecutionClient } from './clients/fluidExecutionClient.js';
 import type { MoltxSocialClient } from './clients/moltxSocialClient.js';
 import type { MoltxSwapClient } from './clients/moltxSwapClient.js';
 import type { OpenAIResponsesClient } from './clients/openaiResponsesClient.js';
+import type { XClient } from './clients/xClient.js';
 import type { createLogger } from './utils/logger.js';
 
 export type Logger = ReturnType<typeof createLogger>;
@@ -28,6 +29,11 @@ export interface AppConfig {
     maxToolRounds: number;
   };
   moltx: {
+    apiBase: string;
+  };
+  x: {
+    enablePosting: boolean;
+    userAccessToken: string;
     apiBase: string;
   };
   swap: {
@@ -69,6 +75,7 @@ export interface Clients {
   fluid: FluidClient;
   fluidExecution: FluidExecutionClient;
   openai: OpenAIResponsesClient;
+  x: XClient;
 }
 
 export type NetworkName = 'ethereum' | 'arbitrum' | 'base' | 'polygon' | 'plasma';

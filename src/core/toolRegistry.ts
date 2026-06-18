@@ -2,15 +2,19 @@ import {
   BASE_USDC_ADDRESS,
   getMemorySummary,
   recordDeposit,
+  recordTweet,
   shouldSkipDeposit,
   updateSnapshots,
+  type AgentDepositRecord,
   type AgentStateV1
 } from './agentMemory.js';
 import { evaluateActionPolicy } from './policy.js';
+import { formatUnits } from '../utils/amounts.js';
 import type {
   AgentAction,
   AppConfig,
   Clients,
+  FluidMarket,
   Logger,
   NetworkName,
   OpenAIFunctionCallItem,
@@ -206,13 +210,82 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
       }
 
       const targetDepositId = depositId ?? pending?.depositId;
-      return {
-        ok: false,
-        notImplemented: true,
-        error: 'X/MoltX posting is not wired yet. depositId recorded in memory for a future cycle.',
-        depositId: targetDepositId,
-        hint: 'When implemented, this tool will post and call recordTweet to clear pending.'
-      };
+      const deposit = memory.state.actions.deposits.find((entry) => entry.id === targetDepositId);
+      if (!deposit) {
+        return { ok: false, error: `Deposit not found: ${targetDepositId}` };
+      }
+
+      if (deposit.status !== 'confirmed' || deposit.dryRun) {
+        return {
+          ok: false,
+          blocked: true,
+          reason: 'Only confirmed live deposits can be posted to X',
+          depositId: deposit.id
+        };
+      }
+
+      if (deposit.tweeted) {
+        return { ok: true, alreadyPosted: true, depositId: deposit.id, tweetId: deposit.tweetId ?? null };
+      }
+
+      if (!config.x.enablePosting) {
+        return {
+          ok: false,
+          blocked: true,
+          reason: 'ENABLE_X_POSTING is false',
+          depositId: deposit.id
+        };
+      }
+
+      if (!config.x.userAccessToken) {
+        return {
+          ok: false,
+          blocked: true,
+          reason: 'X_USER_ACCESS_TOKEN is missing',
+          depositId: deposit.id
+        };
+      }
+
+      const text =
+        typeof args.text === 'string' && args.text.trim()
+          ? args.text.trim()
+          : await buildDefaultDepositPostText(deposit, clients);
+
+      try {
+        const post = await clients.x.createPost(text);
+        const tweet = recordTweet(memory.state, {
+          depositId: deposit.id,
+          status: 'posted',
+          externalId: post.id,
+          text
+        });
+        memory.persist();
+
+        return {
+          ok: true,
+          depositId: deposit.id,
+          tweetId: post.id,
+          text,
+          recordId: tweet.id
+        };
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        const tweet = recordTweet(memory.state, {
+          depositId: deposit.id,
+          status: 'failed',
+          text
+        });
+        memory.persist();
+
+        return {
+          ok: false,
+          blocked: true,
+          reason: message,
+          depositId: deposit.id,
+          failedTweetRecordId: tweet.id,
+          text
+        };
+      }
     },
 
     get_swap_quote: async (args) => {
@@ -318,6 +391,7 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
           smartAccountType: config.evm.accountMode === 'smart' ? config.evm.smartAccountType : undefined,
           enableSwapQuotes: config.swap.enableQuotes,
           enableAutonomousSwaps: config.swap.enableAutonomousSwaps,
+          enableXPosting: config.x.enablePosting,
           enableFluidLending: config.fluid.enabled,
           enableFluidPositionCreation: config.fluid.enablePositionCreation,
           autoDepositIntent: treasuryEnabled,
@@ -387,6 +461,62 @@ function buildDepositHints(config: AppConfig, usdcRaw: bigint, state: AgentState
       ? skip.reason ?? (meetsMin ? null : 'USDC balance below MIN_IDLE_USDC_RAW')
       : null
   };
+}
+
+async function buildDefaultDepositPostText(deposit: AgentDepositRecord, clients: Clients): Promise<string> {
+  const market = await findDepositMarket(deposit, clients);
+  const symbol = inferUnderlyingSymbol(deposit, market);
+  const marketSymbol = market?.symbol ?? 'market';
+  const decimals = market?.decimals ?? inferDepositDecimals(deposit);
+  const amount = formatUnits(deposit.rawAmount, decimals);
+  const parts = [`Treasury update: supplied ${amount} ${symbol} into Fluid ${marketSymbol} on Base.`];
+
+  if (market?.totalApr !== undefined) {
+    parts.push(`Current market APR: ~${formatApr(market.totalApr)}%.`);
+  }
+
+  if (deposit.txHash) {
+    parts.push(`Tx: https://basescan.org/tx/${deposit.txHash}`);
+  }
+
+  return parts.join(' ');
+}
+
+async function findDepositMarket(deposit: AgentDepositRecord, clients: Clients): Promise<FluidMarket | null> {
+  try {
+    const result = await clients.fluidExecution.getMarkets();
+    return result.markets?.find((market) => market.fToken.toLowerCase() === deposit.fToken.toLowerCase()) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function inferUnderlyingSymbol(deposit: AgentDepositRecord, market: FluidMarket | null): string {
+  if (deposit.symbol) {
+    return deposit.symbol;
+  }
+
+  if (deposit.underlying?.toLowerCase() === BASE_USDC_ADDRESS.toLowerCase()) {
+    return 'USDC';
+  }
+
+  if (market?.symbol?.startsWith('f') && market.symbol.length > 1) {
+    return market.symbol.slice(1);
+  }
+
+  return market?.symbol ?? 'tokens';
+}
+
+function inferDepositDecimals(deposit: AgentDepositRecord): number {
+  if (deposit.underlying?.toLowerCase() === BASE_USDC_ADDRESS.toLowerCase() || deposit.symbol === 'USDC') {
+    return 6;
+  }
+
+  return 18;
+}
+
+function formatApr(value: number): string {
+  return value.toFixed(2).replace(/\.?0+$/, '');
 }
 
 function definitions(): OpenAIToolDefinition[] {
@@ -479,7 +609,7 @@ function definitions(): OpenAIToolDefinition[] {
       type: 'function',
       name: 'post_deposit_update',
       description:
-        'Post a status update about a recorded deposit (e.g. to X). Use when memory shows pending tweet_deposit. Not fully implemented yet.',
+        'Post a status update about a confirmed recorded deposit to X. Use when memory shows pending tweet_deposit.',
       parameters: {
         type: 'object',
         additionalProperties: false,

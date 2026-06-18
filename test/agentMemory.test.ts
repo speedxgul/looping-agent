@@ -24,6 +24,11 @@ const baseConfig: AppConfig = {
   },
   openai: { apiKey: '', model: 'gpt-5.1', baseUrl: 'https://api.openai.com/v1', maxToolRounds: 4 },
   moltx: { apiBase: 'https://moltx.io/v1' },
+  x: {
+    enablePosting: false,
+    userAccessToken: '',
+    apiBase: 'https://api.x.com'
+  },
   swap: {
     baseUrl: 'https://swap.moltx.io',
     enableQuotes: true,

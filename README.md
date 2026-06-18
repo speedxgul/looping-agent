@@ -6,6 +6,7 @@ An extensible v1 scaffold for an autonomous DeFi agent. OpenAI decides what to d
 - persists run history and deposit/tweet tasks in `data/agent-state.json` (see agent memory)
 - reads Base wallet USDC/ETH balances and live Fluid APRs to pick allowlisted pools
 - can create Fluid lending positions on Base when signer config and policy flags are enabled
+- can post confirmed Fluid deposit updates to X when X posting is explicitly enabled
 - gets optional best-route swap quotes through `https://swap.moltx.io/swap`
 - keeps token-launch support as a separate adapter for later
 - defaults to `DRY_RUN=true`, so it will not post or execute transactions unless explicitly enabled
@@ -44,7 +45,7 @@ docs/
 1. Loads agent memory from `AGENT_STATE_PATH` and injects a summary into the prompt.
 2. Calls OpenAI with tools and the configured mission.
 3. Typical treasury cycle (when live): policy → memory → Fluid positions → markets (APRs) → wallet balances → optional deposit into top allowlisted fToken (e.g. fUSDC).
-4. Confirmed deposits are recorded in memory; a `tweet_deposit` pending task is queued until `post_deposit_update` is implemented.
+4. Confirmed deposits are recorded in memory; a `tweet_deposit` pending task is queued until `post_deposit_update` successfully posts to X.
 5. Local policy and memory idempotency block duplicate deposits (pending tweet, cooldown).
 6. The model returns a final run summary; memory is saved for the next tick.
 
@@ -93,6 +94,20 @@ bun derive-key.ts "your twelve or twenty four words here"
 ```
 
 Use the `privateKey` for the path whose `address` matches `AGENT_WALLET_ADDRESS`.
+
+## X Posting
+
+`post_deposit_update` posts text-only deposit updates to X API v2 and clears the pending `tweet_deposit` task only after X returns a post id. This is gated separately from `DRY_RUN`.
+
+```bash
+ENABLE_X_POSTING=true
+X_API_BASE=https://api.x.com
+X_USER_ACCESS_TOKEN=...
+```
+
+`X_USER_ACCESS_TOKEN` must be a preissued user-context access token for the X account that should post, with permission to create posts. This project does not implement OAuth 1.0a or OAuth 2.0 PKCE token issuance in v1.
+
+If `ENABLE_X_POSTING=false`, the token is missing, or the X API call fails, the pending task remains in memory so the agent cannot make another deposit until posting is configured or succeeds.
 
 ## OpenAI
 

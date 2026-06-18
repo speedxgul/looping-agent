@@ -34,6 +34,11 @@ export function loadConfig(): AppConfig {
     moltx: {
       apiBase: readString('MOLTX_API_BASE', 'https://moltx.io/v1')
     },
+    x: {
+      enablePosting: readBoolean('ENABLE_X_POSTING', false),
+      userAccessToken: readString('X_USER_ACCESS_TOKEN', ''),
+      apiBase: readString('X_API_BASE', 'https://api.x.com')
+    },
     swap: {
       baseUrl: readString('MOLTX_SWAP_BASE', 'https://swap.moltx.io'),
       enableQuotes: readBoolean('ENABLE_SWAP_QUOTES', true),
