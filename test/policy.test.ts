@@ -1,134 +1,53 @@
 import { describe, expect, test } from 'bun:test';
 import { evaluateActionPolicy } from '../src/core/policy.js';
-import type { AppConfig } from '../src/types.js';
-
-const baseConfig: AppConfig = {
-  runtime: {
-    dryRun: true,
-    nodeEnv: 'test',
-    autonomyIntervalMs: 1000
-  },
-  logLevel: 'info',
-  agent: {
-    name: 'TestAgent',
-    walletAddress: '0x0000000000000000000000000000000000000001',
-    mission: 'test',
-    statePath: 'data/agent-state.json',
-    depositCooldownMs: 86400000
-  },
-  openai: {
-    apiKey: '',
-    model: 'gpt-5.1',
-    baseUrl: 'https://api.openai.com/v1',
-    maxToolRounds: 4
-  },
-  moltx: {
-    apiBase: 'https://moltx.io/v1'
-  },
-  x: {
-    enablePosting: false,
-    userAccessToken: '',
-    apiBase: 'https://api.x.com'
-  },
-  swap: {
-    baseUrl: 'https://swap.moltx.io',
-    enableQuotes: true,
-    enableAutonomousSwaps: false,
-    quoteNetwork: 'base',
-    quoteSellToken: '',
-    quoteBuyToken: '',
-    quoteSellAmount: '0',
-    maxSlippagePercent: 0.5,
-    maxPriceImpactPercent: 1
-  },
-  fluid: {
-    baseUrl: 'https://defi.moltx.io',
-    enabled: true,
-    enablePositionCreation: true,
-    minIdleUsdcRaw: 0n,
-    maxSupplyAmountRaw: 1000n,
-    allowedFTokens: ['0x00000000000000000000000000000000000000f1'],
-    defaultFTokens: {
-      usdc: '',
-      weth: ''
-    }
-  },
-  evm: {
-    accountMode: 'eoa',
-    baseRpcUrl: 'https://base.example',
-    privateKey: `0x${'11'.repeat(32)}`,
-    smartAccountType: 'coinbase',
-    smartAccountBundlerUrl: '',
-    smartAccountUsePaymaster: false
-  },
-  walrus: {
-    memoryBackend: 'file',
-    publisherUrl: 'https://publisher.walrus-testnet.walrus.space',
-    aggregatorUrl: 'https://aggregator.walrus-testnet.walrus.space',
-    epochs: 5,
-    stateBlobId: '',
-    memwal: {
-      enabled: false,
-      accountId: '',
-      delegateKey: '',
-      relayerUrl: 'https://relayer-staging.memory.walrus.xyz',
-      namespace: 'defi-agent'
-    }
-  },
-};
+import { baseConfig } from './fixtures/baseConfig.js';
 
 describe('evaluateActionPolicy', () => {
-  test('allows fluid supply for allowlisted markets under cap', () => {
+  test('allows suilend supply for allowlisted assets under cap', () => {
     const result = evaluateActionPolicy(
       {
-        type: 'FLUID_SUPPLY',
+        type: 'SUILEND_SUPPLY',
         details: {
-          fTokenAddress: '0x00000000000000000000000000000000000000f1',
+          asset: 'usdc',
           rawAmount: '1000'
         }
       },
-      baseConfig
+      baseConfig()
     );
 
     expect(result).toEqual({ allowed: true, reason: 'allowed' });
   });
 
-  test('blocks fluid supply above the configured cap', () => {
+  test('blocks suilend supply above the configured cap', () => {
     const result = evaluateActionPolicy(
       {
-        type: 'FLUID_SUPPLY',
+        type: 'SUILEND_SUPPLY',
         details: {
-          fTokenAddress: '0x00000000000000000000000000000000000000f1',
+          asset: 'usdc',
           rawAmount: '1001'
         }
       },
-      baseConfig
+      baseConfig({ runtime: { dryRun: false, nodeEnv: 'test', autonomyIntervalMs: 1000 } })
     );
 
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe('Requested Fluid supply amount exceeds FLUID_MAX_SUPPLY_AMOUNT_RAW');
+    expect(result.reason).toBe('Requested amount exceeds SUI_MAX_SUPPLY_AMOUNT_RAW');
   });
 
-  test('blocks smart account fluid supply without a bundler url', () => {
+  test('blocks borrow when projected health factor is too low', () => {
     const result = evaluateActionPolicy(
       {
-        type: 'FLUID_SUPPLY',
+        type: 'SUILEND_BORROW',
         details: {
-          fTokenAddress: '0x00000000000000000000000000000000000000f1',
-          rawAmount: '1000'
+          asset: 'usdc',
+          rawAmount: '1000',
+          projectedHealthFactor: 1.1
         }
       },
-      {
-        ...baseConfig,
-        evm: {
-          ...baseConfig.evm,
-          accountMode: 'smart',
-          smartAccountBundlerUrl: ''
-        }
-      }
+      baseConfig({ sui: { ...baseConfig().sui, enableBorrow: true } })
     );
 
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe('SMART_ACCOUNT_BUNDLER_URL is missing');
+    expect(result.reason).toBe('Borrow would push health factor below SUI_MIN_HEALTH_FACTOR (1.25)');
   });
 });

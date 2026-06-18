@@ -2,18 +2,19 @@ import { describe, expect, test } from 'bun:test';
 import {
   beginRun,
   createEmptyAgentState,
-  recordDeposit,
+  recordPositionAction,
   type AgentStateV1
 } from '../src/core/agentMemory.js';
 import { createToolRegistry } from '../src/core/toolRegistry.js';
 import type { AppConfig, Clients, Logger } from '../src/types.js';
+import { baseConfig } from './fixtures/baseConfig.js';
 
-const fToken = '0xf42f5795D9ac7e9D757dB633D693cD548Cfd9169';
+const usdcCoinType = '0x5d4b302506645c37ff133b98c4b50a5ae14841659738d6d733d59d0d217a93bf::coin::COIN';
 const logger = quietLogger();
 
-describe('post_deposit_update', () => {
+describe('post_action_update', () => {
   test('blocks when X posting is disabled and leaves pending task intact', async () => {
-    const state = stateWithConfirmedDeposit();
+    const state = stateWithConfirmedSupply();
     const clients = createClients();
     const registry = createRegistry(state, clients, { x: { enablePosting: false } });
 
@@ -27,7 +28,7 @@ describe('post_deposit_update', () => {
   });
 
   test('blocks when X token is missing and leaves pending task intact', async () => {
-    const state = stateWithConfirmedDeposit();
+    const state = stateWithConfirmedSupply();
     const clients = createClients();
     const registry = createRegistry(state, clients, {
       x: { enablePosting: true, userAccessToken: '' }
@@ -42,8 +43,8 @@ describe('post_deposit_update', () => {
     expect(state.actions.tweets).toHaveLength(0);
   });
 
-  test('successful X post clears pending tweet and marks deposit tweeted', async () => {
-    const state = stateWithConfirmedDeposit();
+  test('successful X post clears pending tweet and marks action tweeted', async () => {
+    const state = stateWithConfirmedSupply();
     const clients = createClients({
       x: {
         createPost: async (text: string) => ({ id: 'x-post-1', text })
@@ -56,13 +57,13 @@ describe('post_deposit_update', () => {
     expect(result.ok).toBe(true);
     expect(result.tweetId).toBe('x-post-1');
     expect(result.text).toBe(
-      'Treasury update: supplied 5 USDC into Fluid fUSDC on Base. Current market APR: ~4.3%. Tx: https://basescan.org/tx/0xabc'
+      'Treasury update: supplied 5 USDC into Suilend USDC on Sui. Current market APR: ~4.3%. Tx: https://suiscan.xyz/testnet/tx/0xabc'
     );
     expect(state.pending).toHaveLength(0);
-    expect(state.actions.deposits[0]?.tweeted).toBe(true);
-    expect(state.actions.deposits[0]?.tweetId).toBe('x-post-1');
+    expect(state.actions.positionActions[0]?.tweeted).toBe(true);
+    expect(state.actions.positionActions[0]?.tweetId).toBe('x-post-1');
     expect(state.actions.tweets[0]).toMatchObject({
-      depositId: state.actions.deposits[0]?.id,
+      actionId: state.actions.positionActions[0]?.id,
       status: 'posted',
       externalId: 'x-post-1',
       text: result.text
@@ -70,7 +71,7 @@ describe('post_deposit_update', () => {
   });
 
   test('failed X post records failure and keeps pending tweet', async () => {
-    const state = stateWithConfirmedDeposit();
+    const state = stateWithConfirmedSupply();
     const clients = createClients({
       x: {
         createPost: async () => {
@@ -86,27 +87,27 @@ describe('post_deposit_update', () => {
     expect(result.blocked).toBe(true);
     expect(result.reason).toContain('HTTP 403');
     expect(state.pending).toHaveLength(1);
-    expect(state.actions.deposits[0]?.tweeted).toBe(false);
-    expect(state.actions.deposits[0]?.tweetId).toBeUndefined();
+    expect(state.actions.positionActions[0]?.tweeted).toBe(false);
+    expect(state.actions.positionActions[0]?.tweetId).toBeUndefined();
     expect(state.actions.tweets[0]).toMatchObject({
-      depositId: state.actions.deposits[0]?.id,
+      actionId: state.actions.positionActions[0]?.id,
       status: 'failed',
       text: 'Treasury update'
     });
   });
 });
 
-function stateWithConfirmedDeposit(): AgentStateV1 {
+function stateWithConfirmedSupply(): AgentStateV1 {
   const state = createEmptyAgentState(baseConfig());
   const runId = beginRun(state);
-  recordDeposit(state, {
+  recordPositionAction(state, {
     runId,
-    fToken,
+    protocol: 'suilend',
+    action: 'supply',
+    asset: 'usdc',
     rawAmount: '5000000',
-    symbol: 'USDC',
-    underlying: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     status: 'confirmed',
-    txHash: '0xabc',
+    digest: '0xabc',
     dryRun: false
   });
   return state;
@@ -122,6 +123,8 @@ function createRegistry(
       ...baseConfig(),
       x: {
         ...baseConfig().x,
+        enablePosting: true,
+        userAccessToken: 'user-token',
         ...overrides.x
       }
     },
@@ -142,7 +145,7 @@ async function executePost(
 ): Promise<Record<string, unknown>> {
   return registry.execute({
     type: 'function_call',
-    name: 'post_deposit_update',
+    name: 'post_action_update',
     call_id: 'call-1',
     arguments: JSON.stringify(args)
   });
@@ -156,31 +159,53 @@ function createClients(overrides: Partial<Clients> = {}): Clients {
     swap: {
       getQuote: async () => ({ validRoutes: [], bestRoute: null })
     },
-    fluid: {
-      getPositions: async () => ({ positions: [] })
+    suiExecution: {
+      isConfigured: () => true,
+      getAddress: () => '0x0000000000000000000000000000000000000001',
+      assertWalletMatches: async () => ({ address: '0x0000000000000000000000000000000000000001' }),
+      getCoinBalances: async () => ({
+        wallet: '0x0000000000000000000000000000000000000001',
+        sui: { symbol: 'SUI', coinType: '0x2::sui::SUI', decimals: 9, raw: '0', formatted: '0' },
+        usdc: { symbol: 'USDC', coinType: usdcCoinType, decimals: 6, raw: '0', formatted: '0' }
+      }),
+      signAndExecute: async () => ({ digest: '0xabc', effects: {} })
     },
-    fluidExecution: {
+    suilend: {
+      resolveCoinType: (asset: string) => (asset === 'usdc' ? usdcCoinType : asset),
       getMarkets: async () => ({
         markets: [
           {
-            fToken,
-            underlying: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-            symbol: 'fUSDC',
-            name: 'Fluid USDC',
+            coinType: usdcCoinType,
+            symbol: 'USDC',
             decimals: 6,
-            isNativeUnderlying: false,
-            totalAssets: '0',
-            supplyRate: 4.2,
-            rewardsRate: 0.1,
-            totalApr: 4.3
+            supplyApr: 4.2,
+            borrowApr: 5.1,
+            totalApr: 4.3,
+            price: 1,
+            allowed: true
           }
         ]
       }),
-      getWalletBalances: async () => {
-        throw new Error('not used');
-      },
-      assertWalletMatches: async () => ({ address: '0x0000000000000000000000000000000000000001' }),
-      supplyToFluid: async () => ({ txHash: '0xabc' })
+      getObligation: async () => ({
+        obligationId: null,
+        deposits: [],
+        borrows: [],
+        healthFactor: null,
+        borrowLimitUsd: 0,
+        liquidationThresholdUsd: 0
+      }),
+      executeSupply: async () => ({ digest: '0xabc' }),
+      executeWithdraw: async () => ({ digest: '0xabc' }),
+      executeBorrow: async () => ({ digest: '0xabc' }),
+      executeRepay: async () => ({ digest: '0xabc' })
+    },
+    navi: {
+      isEnabled: () => false,
+      getRates: async () => ({ rates: [] })
+    },
+    scallop: {
+      isEnabled: () => false,
+      getRates: async () => ({ rates: [] })
     },
     openai: {
       create: async () => ({ output: [] })
@@ -188,71 +213,16 @@ function createClients(overrides: Partial<Clients> = {}): Clients {
     x: {
       createPost: async (text: string) => ({ id: 'x-post-1', text })
     },
+    walrusBlob: {
+      upload: async () => ({ blobId: 'blob-1', url: 'https://example.com/blob-1' }),
+      download: async () => null
+    },
+    walrusMemory: {
+      recall: async () => [],
+      remember: async () => undefined
+    },
     ...overrides
   } as unknown as Clients;
-}
-
-function baseConfig(): AppConfig {
-  return {
-    runtime: { dryRun: false, nodeEnv: 'test', autonomyIntervalMs: 1000 },
-    logLevel: 'info',
-    agent: {
-      name: 'TestAgent',
-      walletAddress: '0x0000000000000000000000000000000000000001',
-      mission: 'test',
-      statePath: '',
-      depositCooldownMs: 86400000
-    },
-    openai: { apiKey: '', model: 'gpt-5.1', baseUrl: 'https://api.openai.com/v1', maxToolRounds: 4 },
-    moltx: { apiBase: 'https://moltx.io/v1' },
-    x: {
-      enablePosting: true,
-      userAccessToken: 'user-token',
-      apiBase: 'https://api.x.com'
-    },
-    swap: {
-      baseUrl: 'https://swap.moltx.io',
-      enableQuotes: true,
-      enableAutonomousSwaps: false,
-      quoteNetwork: 'base',
-      quoteSellToken: '',
-      quoteBuyToken: '',
-      quoteSellAmount: '0',
-      maxSlippagePercent: 0.5,
-      maxPriceImpactPercent: 1
-    },
-    fluid: {
-      baseUrl: 'https://defi.moltx.io',
-      enabled: true,
-      enablePositionCreation: true,
-      minIdleUsdcRaw: 0n,
-      maxSupplyAmountRaw: 1000n,
-      allowedFTokens: [],
-      defaultFTokens: { usdc: '', weth: '' }
-    },
-    evm: {
-      accountMode: 'eoa',
-      baseRpcUrl: 'https://base.example',
-      privateKey: `0x${'11'.repeat(32)}`,
-      smartAccountType: 'coinbase',
-      smartAccountBundlerUrl: '',
-      smartAccountUsePaymaster: false
-    },
-    walrus: {
-      memoryBackend: 'file',
-      publisherUrl: 'https://publisher.walrus-testnet.walrus.space',
-      aggregatorUrl: 'https://aggregator.walrus-testnet.walrus.space',
-      epochs: 5,
-      stateBlobId: '',
-      memwal: {
-        enabled: false,
-        accountId: '',
-        delegateKey: '',
-        relayerUrl: 'https://relayer-staging.memory.walrus.xyz',
-        namespace: 'defi-agent'
-      }
-    }
-  };
 }
 
 function quietLogger(): Logger {

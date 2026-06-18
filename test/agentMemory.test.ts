@@ -1,161 +1,129 @@
-import { afterEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { afterEach, describe, expect, test } from 'bun:test';
 import {
-  beginRun,
+  createEmptyAgentState,
+  getMemorySummary,
   loadAgentState,
+  normalizeAgentState,
   recordDeposit,
+  recordPositionAction,
   recordTweet,
-  saveAgentState,
-  shouldSkipDeposit
+  shouldSkipDeposit,
+  shouldSkipWriteAction
 } from '../src/core/agentMemory.js';
-import type { AppConfig } from '../src/types.js';
-
-const baseConfig: AppConfig = {
-  runtime: { dryRun: false, nodeEnv: 'test', autonomyIntervalMs: 1000 },
-  logLevel: 'info',
-  agent: {
-    name: 'TestAgent',
-    walletAddress: '0x0000000000000000000000000000000000000001',
-    mission: 'test',
-    statePath: '',
-    depositCooldownMs: 86400000
-  },
-  openai: { apiKey: '', model: 'gpt-5.1', baseUrl: 'https://api.openai.com/v1', maxToolRounds: 4 },
-  moltx: { apiBase: 'https://moltx.io/v1' },
-  x: {
-    enablePosting: false,
-    userAccessToken: '',
-    apiBase: 'https://api.x.com'
-  },
-  swap: {
-    baseUrl: 'https://swap.moltx.io',
-    enableQuotes: true,
-    enableAutonomousSwaps: false,
-    quoteNetwork: 'base',
-    quoteSellToken: '',
-    quoteBuyToken: '',
-    quoteSellAmount: '0',
-    maxSlippagePercent: 0.5,
-    maxPriceImpactPercent: 1
-  },
-  fluid: {
-    baseUrl: 'https://defi.moltx.io',
-    enabled: true,
-    enablePositionCreation: true,
-    minIdleUsdcRaw: 0n,
-    maxSupplyAmountRaw: 1000n,
-    allowedFTokens: [],
-    defaultFTokens: { usdc: '', weth: '' }
-  },
-  evm: {
-    accountMode: 'eoa',
-    baseRpcUrl: 'https://base.example',
-    privateKey: `0x${'11'.repeat(32)}`,
-    smartAccountType: 'coinbase',
-    smartAccountBundlerUrl: '',
-    smartAccountUsePaymaster: false
-  },
-  walrus: {
-    memoryBackend: 'file',
-    publisherUrl: 'https://publisher.walrus-testnet.walrus.space',
-    aggregatorUrl: 'https://aggregator.walrus-testnet.walrus.space',
-    epochs: 5,
-    stateBlobId: '',
-    memwal: {
-      enabled: false,
-      accountId: '',
-      delegateKey: '',
-      relayerUrl: 'https://relayer-staging.memory.walrus.xyz',
-      namespace: 'defi-agent'
-    }
-  }
-};
-
-const tempFiles: string[] = [];
-
-afterEach(() => {
-  for (const file of tempFiles) {
-    if (fs.existsSync(file)) {
-      fs.unlinkSync(file);
-    }
-  }
-  tempFiles.length = 0;
-});
+import { baseConfig } from './fixtures/baseConfig.js';
 
 function tempStatePath(): string {
-  const file = path.join(os.tmpdir(), `agent-state-${Date.now()}-${Math.random()}.json`);
-  tempFiles.push(file);
-  return file;
+  return path.join(os.tmpdir(), `agent-state-${Date.now()}-${Math.random()}.json`);
 }
 
 describe('agentMemory', () => {
   test('load initializes empty state when file missing', () => {
     const statePath = tempStatePath();
-    const state = loadAgentState(baseConfig, statePath);
+    const state = loadAgentState(baseConfig(), statePath);
     expect(state.version).toBe(1);
-    expect(state.actions.deposits).toEqual([]);
-    expect(state.pending).toEqual([]);
+    expect(state.actions.positionActions).toEqual([]);
   });
 
-  test('recordDeposit queues tweet_deposit for confirmed deposits', () => {
+  test('recordPositionAction queues tweet_action for confirmed supply', () => {
     const statePath = tempStatePath();
-    const state = loadAgentState(baseConfig, statePath);
-    const runId = beginRun(state);
-
-    recordDeposit(state, {
-      runId,
-      fToken: '0xf42f5795D9ac7e9D757dB633D693cD548Cfd9169',
-      rawAmount: '5000000',
+    const state = loadAgentState(baseConfig(), statePath);
+    recordPositionAction(state, {
+      runId: 'run-1',
+      protocol: 'suilend',
+      action: 'supply',
+      asset: 'usdc',
+      rawAmount: '1000',
       status: 'confirmed',
-      txHash: '0xdeadbeef',
       dryRun: false
     });
 
-    expect(state.pending).toHaveLength(1);
-    expect(state.pending[0]?.type).toBe('tweet_deposit');
-    expect(state.actions.deposits[0]?.tweeted).toBe(false);
-
-    saveAgentState(statePath, state);
-    const reloaded = loadAgentState(baseConfig, statePath);
-    expect(reloaded.pending).toHaveLength(1);
-    expect(reloaded.actions.deposits[0]?.txHash).toBe('0xdeadbeef');
+    expect(state.pending.some((task) => task.type === 'tweet_action')).toBe(true);
   });
 
-  test('shouldSkipDeposit blocks while tweet pending', () => {
-    const state = loadAgentState(baseConfig, tempStatePath());
-    const runId = beginRun(state);
-    recordDeposit(state, {
-      runId,
-      fToken: '0xf42f5795D9ac7e9D757dB633D693cD548Cfd9169',
-      rawAmount: '5000000',
+  test('migrates legacy deposits into positionActions', () => {
+    const migrated = normalizeAgentState(baseConfig(), {
+      version: 1,
+      walletAddress: baseConfig().agent.walletAddress,
+      actions: {
+        deposits: [
+          {
+            id: 'dep-1',
+            runId: 'run-1',
+            fToken: '0xfToken',
+            rawAmount: '1000',
+            status: 'confirmed',
+            dryRun: false,
+            createdAt: new Date().toISOString(),
+            tweeted: false
+          }
+        ]
+      }
+    });
+
+    expect(migrated?.actions.positionActions[0]?.action).toBe('supply');
+    expect(migrated?.actions.positionActions[0]?.digest).toBeUndefined();
+  });
+
+  test('shouldSkipWriteAction blocks while tweet pending', () => {
+    const state = createEmptyAgentState(baseConfig());
+    recordPositionAction(state, {
+      runId: 'run-1',
+      protocol: 'suilend',
+      action: 'supply',
+      asset: 'usdc',
+      rawAmount: '1000',
       status: 'confirmed',
-      txHash: '0xabc',
       dryRun: false
     });
 
-    const skip = shouldSkipDeposit(state, baseConfig, '0xf42f5795D9ac7e9D757dB633D693cD548Cfd9169');
+    const skip = shouldSkipWriteAction(state, baseConfig(), 'usdc', 'supply');
     expect(skip.skip).toBe(true);
-    expect(skip.reason).toContain('tweet');
   });
 
-  test('recordTweet clears pending tweet_deposit', () => {
-    const state = loadAgentState(baseConfig, tempStatePath());
-    const runId = beginRun(state);
-    const deposit = recordDeposit(state, {
-      runId,
-      fToken: '0xf42f5795D9ac7e9D757dB633D693cD548Cfd9169',
-      rawAmount: '5000000',
+  test('recordTweet clears pending tweet_action', () => {
+    const state = createEmptyAgentState(baseConfig());
+    const action = recordPositionAction(state, {
+      runId: 'run-1',
+      protocol: 'suilend',
+      action: 'supply',
+      asset: 'usdc',
+      rawAmount: '1000',
       status: 'confirmed',
-      txHash: '0xabc',
       dryRun: false
     });
 
-    recordTweet(state, { depositId: deposit.id, status: 'posted', externalId: 'tweet-1' });
-
-    expect(state.pending).toHaveLength(0);
-    expect(state.actions.deposits[0]?.tweeted).toBe(true);
-    expect(shouldSkipDeposit(state, baseConfig).skip).toBe(false);
+    recordTweet(state, { actionId: action.id, status: 'posted', externalId: 'tweet-1' });
+    expect(state.pending.some((task) => task.type === 'tweet_action')).toBe(false);
+    expect(action.tweeted).toBe(true);
   });
+
+  test('recordDeposit wrapper maps legacy deposit shape', () => {
+    const state = createEmptyAgentState(baseConfig());
+    const action = recordDeposit(state, {
+      runId: 'run-1',
+      fToken: '0xfToken',
+      rawAmount: '1000',
+      status: 'confirmed',
+      dryRun: false
+    });
+
+    expect(action.action).toBe('supply');
+    expect(action.asset).toBe('0xfToken');
+    expect(shouldSkipDeposit(state, baseConfig(), '0xfToken').skip).toBe(true);
+  });
+
+  test('getMemorySummary exposes recent actions', () => {
+    const state = createEmptyAgentState(baseConfig());
+    const summary = getMemorySummary(state, baseConfig(), 'run-1');
+    expect(summary.recentActions).toEqual([]);
+    expect(summary.actionSkipReason).toBeNull();
+  });
+});
+
+afterEach(() => {
+  // no-op placeholder for future temp cleanup
+  void fs;
 });

@@ -1,14 +1,19 @@
-import type { FluidClient } from './clients/fluidClient.js';
-import type { FluidExecutionClient } from './clients/fluidExecutionClient.js';
 import type { MoltxSocialClient } from './clients/moltxSocialClient.js';
 import type { MoltxSwapClient } from './clients/moltxSwapClient.js';
+import type { NaviClient } from './clients/naviClient.js';
 import type { OpenAIResponsesClient } from './clients/openaiResponsesClient.js';
+import type { ScallopClient } from './clients/scallopClient.js';
+import type { SuiExecutionClient } from './clients/sui/suiExecutionClient.js';
+import type { SuilendClient } from './clients/suilendClient.js';
 import type { XClient } from './clients/xClient.js';
 import type { WalrusBlobClient } from './clients/walrusBlobClient.js';
 import type { WalrusMemoryClient } from './clients/walrusMemoryClient.js';
 import type { createLogger } from './utils/logger.js';
 
 export type MemoryBackend = 'file' | 'walrus';
+export type SuiNetwork = 'mainnet' | 'testnet' | 'devnet';
+export type LendingProtocol = 'suilend' | 'navi' | 'scallop';
+export type PositionActionKind = 'supply' | 'withdraw' | 'borrow' | 'repay';
 
 export type Logger = ReturnType<typeof createLogger>;
 
@@ -24,7 +29,7 @@ export interface AppConfig {
     walletAddress: string;
     mission: string;
     statePath: string;
-    depositCooldownMs: number;
+    actionCooldownMs: number;
   };
   openai: {
     apiKey: string;
@@ -51,47 +56,44 @@ export interface AppConfig {
     maxSlippagePercent: number;
     maxPriceImpactPercent: number;
   };
-  fluid: {
-    baseUrl: string;
+  sui: {
     enabled: boolean;
     enablePositionCreation: boolean;
-    minIdleUsdcRaw: bigint;
-    maxSupplyAmountRaw: bigint;
-    allowedFTokens: string[];
-    defaultFTokens: {
+    enableBorrow: boolean;
+    rpcUrl: string;
+    network: SuiNetwork;
+    privateKey: string;
+    walletAddress: string;
+    usdcCoinType: string;
+    suiCoinType: string;
+    allowedAssets: string[];
+    allowedPools: string[];
+    minIdleRaw: bigint;
+    maxSupplyRaw: bigint;
+    maxBorrowRaw: bigint;
+    minHealthFactor: number;
+    explorerBaseUrl: string;
+    defaultAssets: {
       usdc: string;
-      weth: string;
+      sui: string;
+    };
+    protocols: {
+      suilend: { enabled: boolean };
+      navi: { enabled: boolean };
+      scallop: { enabled: boolean };
     };
   };
-  evm: {
-    accountMode: 'eoa' | 'smart';
-    baseRpcUrl: string;
-    privateKey: string;
-    smartAccountType: 'coinbase';
-    smartAccountBundlerUrl: string;
-    smartAccountUsePaymaster: boolean;
-  };
   walrus: {
-    /** Where the durable agent state lives: local file or Walrus blobs. */
     memoryBackend: MemoryBackend;
-    /** Walrus HTTP publisher base URL (testnet by default). */
     publisherUrl: string;
-    /** Walrus HTTP aggregator base URL (testnet by default). */
     aggregatorUrl: string;
-    /** Number of Walrus storage epochs to persist each blob for. */
     epochs: number;
-    /** Optional blob id to bootstrap/restore state from on a fresh machine. */
     stateBlobId: string;
     memwal: {
-      /** Enables MemWal semantic memory (recall/remember). */
       enabled: boolean;
-      /** MemWalAccount object id on Sui. */
       accountId: string;
-      /** Ed25519 delegate private key (hex). */
       delegateKey: string;
-      /** MemWal relayer URL (staging by default). */
       relayerUrl: string;
-      /** Namespace that isolates this agent's memories. */
       namespace: string;
     };
   };
@@ -100,8 +102,10 @@ export interface AppConfig {
 export interface Clients {
   social: MoltxSocialClient;
   swap: MoltxSwapClient;
-  fluid: FluidClient;
-  fluidExecution: FluidExecutionClient;
+  suiExecution: SuiExecutionClient;
+  suilend: SuilendClient;
+  navi: NaviClient;
+  scallop: ScallopClient;
   openai: OpenAIResponsesClient;
   x: XClient;
   walrusBlob: WalrusBlobClient;
@@ -110,66 +114,65 @@ export interface Clients {
 
 export type NetworkName = 'ethereum' | 'arbitrum' | 'base' | 'polygon' | 'plasma';
 
-export interface FluidPosition {
-  fToken: string;
+export interface SuiTokenBalance {
   symbol: string;
-  name: string;
-  underlying: string;
-  isNativeUnderlying: boolean;
-  decimals: number;
-  totalAssets: string;
-  totalSupply: string;
-  supplyRate: number;
-  rewardsRate: number;
-  totalApr: number;
-  userShares: string;
-  userAssets: string;
-  userBalance: string;
-}
-
-export interface FluidPositionsResponse {
-  positions?: FluidPosition[];
-  [key: string]: unknown;
-}
-
-export interface FluidMarket {
-  fToken: string;
-  underlying: string;
-  symbol: string;
-  name: string;
-  decimals: number;
-  isNativeUnderlying: boolean;
-  /** Liquidity-layer supply APR (percent, e.g. 5.19 = 5.19%). */
-  supplyRate: number;
-  /** Native on-chain reward APR added to supply (percent). */
-  rewardsRate: number;
-  /** supplyRate + rewardsRate from Fluid API totalRate (percent). */
-  totalApr: number;
-  /** Underlying asset staking APR when present (percent); not included in totalApr. */
-  stakingApr?: number;
-  /** Sum of Fluid merkle reward APRs when present (percent); not included in totalApr. */
-  merkleRewardsApr?: number;
-  totalAssets: string;
-  chain?: string;
-}
-
-export interface FluidMarketsResponse {
-  markets?: FluidMarket[];
-  [key: string]: unknown;
-}
-
-export interface WalletTokenBalance {
-  symbol: string;
-  address: string;
+  coinType: string;
   decimals: number;
   raw: string;
   formatted: string;
 }
 
-export interface WalletBalancesResponse {
+export interface SuiBalancesResponse {
   wallet: string;
-  eth: WalletTokenBalance;
-  usdc: WalletTokenBalance;
+  sui: SuiTokenBalance;
+  usdc: SuiTokenBalance;
+}
+
+export interface SuilendMarket {
+  coinType: string;
+  symbol: string;
+  decimals: number;
+  supplyApr: number;
+  borrowApr: number;
+  totalApr: number;
+  price: number;
+  allowed: boolean;
+}
+
+export interface SuilendMarketsResponse {
+  markets: SuilendMarket[];
+}
+
+export interface SuilendPosition {
+  coinType: string;
+  symbol: string;
+  amount: string;
+  amountUsd: number;
+  side: 'deposit' | 'borrow';
+}
+
+export interface SuilendObligationResponse {
+  obligationId: string | null;
+  obligationOwnerCapId: string | null;
+  healthFactor: number;
+  borrowLimitUsd: number;
+  weightedBorrowsUsd: number;
+  depositedAmountUsd: number;
+  borrowedAmountUsd: number;
+  deposits: SuilendPosition[];
+  borrows: SuilendPosition[];
+}
+
+export interface LendingRateRow {
+  asset: string;
+  coinType: string;
+  suilend?: { supplyApr: number; borrowApr: number };
+  navi?: { supplyApr: number; borrowApr: number };
+  scallop?: { supplyApr: number; borrowApr: number };
+}
+
+export interface LendingRatesComparisonResponse {
+  rows: LendingRateRow[];
 }
 
 export interface TokenInfo {
@@ -264,4 +267,12 @@ export interface OpenAIInputItem {
 export type AgentAction =
   | { type: 'OBSERVE'; summary: string; details?: Record<string, unknown> }
   | { type: 'SWAP_EXECUTE'; route?: SwapRoute | null; details?: Record<string, unknown> }
-  | { type: 'FLUID_SUPPLY'; details?: Record<string, unknown> };
+  | { type: 'SUILEND_SUPPLY'; details?: Record<string, unknown> }
+  | { type: 'SUILEND_WITHDRAW'; details?: Record<string, unknown> }
+  | { type: 'SUILEND_BORROW'; details?: Record<string, unknown> }
+  | { type: 'SUILEND_REPAY'; details?: Record<string, unknown> };
+
+export interface ExecuteTransactionResult {
+  digest: string;
+  success: boolean;
+}

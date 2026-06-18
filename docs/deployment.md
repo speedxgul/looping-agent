@@ -15,25 +15,37 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5.1
 AGENT_WALLET_ADDRESS=0x...
 DRY_RUN=true
+SUI_NETWORK=testnet
 ```
 
-Keep `DRY_RUN=true` until you have verified several runs.
+Keep `DRY_RUN=true` until you have verified several runs on testnet.
 
-Optional Fluid position creation:
+Optional Suilend position creation:
 
 ```bash
-ENABLE_FLUID_POSITION_CREATION=true
+SUI_ENABLED=true
+ENABLE_SUI_POSITION_CREATION=true
 DRY_RUN=false
-ACCOUNT_MODE=smart
-BASE_RPC_URL=https://...
-AGENT_PRIVATE_KEY=0x...
-SMART_ACCOUNT_BUNDLER_URL=https://...
-FLUID_ALLOWED_FTOKENS=0x...
+SUI_RPC_URL=https://fullnode.testnet.sui.io:443
+AGENT_SUI_PRIVATE_KEY=0x...
+SUI_ALLOWED_ASSETS=usdc
+SUI_MAX_SUPPLY_AMOUNT_RAW=10000000
+MIN_IDLE_USDC_RAW=5000000
 ```
 
-Keep `FLUID_ALLOWED_FTOKENS` narrow. The agent will only deposit into allowlisted Fluid markets.
+Optional borrow (requires health guard awareness):
 
-With `ACCOUNT_MODE=smart`, `AGENT_PRIVATE_KEY` is the smart account owner key. Set `AGENT_WALLET_ADDRESS` to the derived smart account address from `bun run account:address`.
+```bash
+SUI_ENABLE_BORROW=true
+SUI_MIN_HEALTH_FACTOR=1.25
+SUI_MAX_BORROW_AMOUNT_RAW=...
+```
+
+Set `AGENT_WALLET_ADDRESS` to the Sui address derived from `AGENT_SUI_PRIVATE_KEY`:
+
+```bash
+bun run account:address
+```
 
 ## Docker
 
@@ -54,6 +66,15 @@ There is no web server in v1. Deploy it as a worker/background process, not a we
 
 ## Production Notes
 
-- Do not add private keys until a signer module exists.
-- Keep autonomous swaps disabled until transaction execution has daily caps and allowlists.
+- Default to `SUI_NETWORK=testnet` until caps and health guard behavior are verified.
+- Keep `SUI_ALLOWED_ASSETS` narrow — the agent only acts on explicitly allowlisted markets.
+- NAVI and Scallop are read-only rate sources; execution stays on Suilend.
 - Logs are JSON lines and can be shipped to your deployment platform's log viewer.
+
+## Verification
+
+1. `bun run doctor` — key, address, RPC, protocol flags
+2. `bun test`
+3. `DRY_RUN=true SUI_NETWORK=testnet bun run run:once`
+4. Live testnet with tiny caps: supply → withdraw → borrow → repay
+5. Health guard: borrow near limit, confirm auto-repay when HF drops
