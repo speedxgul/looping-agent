@@ -133,28 +133,47 @@ export class SuilendClient {
     const tx = new Transaction();
 
     let capId = obligationOwnerCapId;
-    if (!capId) {
-      const created = createObligationIfNoneExists(client, tx);
-      capId = typeof created.obligationOwnerCapId === 'string' ? created.obligationOwnerCapId : undefined;
-      if (created.didCreate && capId) {
-        sendObligationToUser(created.obligationOwnerCapId, owner, tx);
+    let resolvedObligationId = obligationId;
+
+    // Discover an existing obligation/cap when not supplied by the caller.
+    if (!capId || !resolvedObligationId) {
+      const caps = await SuilendSdkClient.getObligationOwnerCaps(
+        owner,
+        [LENDING_MARKET_TYPE],
+        this.execution.client
+      );
+      if (caps.length > 0) {
+        capId = capId ?? caps[0].id;
+        resolvedObligationId = resolvedObligationId ?? caps[0].obligationId;
       }
     }
 
+    // First-ever supply: create the obligation inside this PTB. The cap is a
+    // transaction argument (not a string id) and must be sent to the user
+    // after the deposit completes.
+    let createdCap: ReturnType<typeof createObligationIfNoneExists>['obligationOwnerCapId'] | undefined;
+    let capArg: typeof capId | typeof createdCap = capId;
     if (!capId) {
-      throw new Error('Unable to resolve Suilend obligation owner cap');
+      const created = createObligationIfNoneExists(client, tx);
+      createdCap = created.obligationOwnerCapId;
+      capArg = created.obligationOwnerCapId;
     }
 
-    const resolvedObligationId =
-      obligationId ??
-      (await SuilendSdkClient.getObligationOwnerCaps(owner, [LENDING_MARKET_TYPE], this.execution.client))[0]?.obligationId;
+    if (!capArg) {
+      throw new Error('Unable to resolve Suilend obligation owner cap');
+    }
 
     if (resolvedObligationId) {
       const obligation = await client.getObligation(resolvedObligationId);
       await client.refreshAll(tx, obligation);
     }
 
-    await client.depositIntoObligation(owner, coinType, rawAmount, tx, capId);
+    await client.depositIntoObligation(owner, coinType, rawAmount, tx, capArg);
+
+    if (createdCap) {
+      sendObligationToUser(createdCap, owner, tx);
+    }
+
     return tx;
   }
 
