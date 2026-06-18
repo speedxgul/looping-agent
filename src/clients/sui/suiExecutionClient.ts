@@ -62,21 +62,24 @@ export class SuiExecutionClient {
       this.client.getBalance({ owner, coinType: this.usdcCoinType })
     ]);
 
+    const suiRaw = readBalanceAmount(suiBalance);
+    const usdcRaw = readBalanceAmount(usdcBalance);
+
     return {
       wallet: owner,
       sui: {
         symbol: 'SUI',
         coinType: this.suiCoinType,
         decimals: 9,
-        raw: suiBalance.balance.totalBalance,
-        formatted: formatUnits(suiBalance.balance.totalBalance, 9)
+        raw: suiRaw,
+        formatted: formatUnits(suiRaw, 9)
       },
       usdc: {
         symbol: 'USDC',
         coinType: this.usdcCoinType,
         decimals: 6,
-        raw: usdcBalance.balance.totalBalance,
-        formatted: formatUnits(usdcBalance.balance.totalBalance, 6)
+        raw: usdcRaw,
+        formatted: formatUnits(usdcRaw, 6)
       }
     };
   }
@@ -116,4 +119,20 @@ export class SuiExecutionClient {
       return false;
     }
   }
+}
+
+// The gRPC getBalance response nests the amount under `balance.balance`
+// (with `coinBalance`/`addressBalance` mirrors). Read it defensively so a
+// missing field never reaches BigInt() in formatUnits.
+function readBalanceAmount(response: { balance?: Record<string, unknown> }): string {
+  const balance = response?.balance ?? {};
+  const candidate = balance.balance ?? balance.coinBalance ?? balance.addressBalance ?? balance.totalBalance;
+  if (typeof candidate === 'string' && candidate.trim()) {
+    return candidate;
+  }
+  if (typeof candidate === 'bigint' || typeof candidate === 'number') {
+    return candidate.toString();
+  }
+
+  return '0';
 }
