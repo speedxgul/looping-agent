@@ -1,12 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AppConfig } from '../types.js';
+import type { AppConfig, LendingProtocol, PositionActionKind } from '../types.js';
 
-export const BASE_USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
-
-export type DepositStatus = 'planned' | 'submitted' | 'confirmed' | 'failed';
+export type ActionStatus = 'planned' | 'submitted' | 'confirmed' | 'failed';
 export type TweetStatus = 'planned' | 'posted' | 'failed';
-export type PendingTaskType = 'tweet_deposit' | 'retry_deposit';
+export type PendingTaskType = 'tweet_action' | 'retry_action' | 'health_alert';
 
 export interface AgentRunRecord {
   runId: string;
@@ -15,14 +13,31 @@ export interface AgentRunRecord {
   summary?: string;
 }
 
-export interface AgentDepositRecord {
+export interface AgentPositionActionRecord {
+  id: string;
+  runId: string;
+  protocol: LendingProtocol;
+  action: PositionActionKind;
+  asset: string;
+  rawAmount: string;
+  obligationId?: string;
+  digest?: string;
+  status: ActionStatus;
+  dryRun: boolean;
+  createdAt: string;
+  tweeted: boolean;
+  tweetId?: string;
+}
+
+/** @deprecated Legacy Fluid deposit record kept only for migration input. */
+interface LegacyDepositRecord {
   id: string;
   runId: string;
   fToken: string;
   symbol?: string;
   rawAmount: string;
   underlying?: string;
-  status: DepositStatus;
+  status: ActionStatus;
   txHash?: string;
   dryRun: boolean;
   createdAt: string;
@@ -32,7 +47,7 @@ export interface AgentDepositRecord {
 
 export interface AgentTweetRecord {
   id: string;
-  depositId?: string;
+  actionId?: string;
   status: TweetStatus;
   text?: string;
   externalId?: string;
@@ -41,15 +56,18 @@ export interface AgentTweetRecord {
 
 export interface AgentPendingTask {
   type: PendingTaskType;
-  depositId: string;
+  actionId?: string;
+  obligationId?: string;
+  healthFactor?: number;
+  suggestedAction?: 'repay' | 'supply';
   createdAt: string;
 }
 
 export interface AgentSnapshots {
-  lastFluidPositions?: unknown;
+  lastSuilendObligation?: unknown;
   lastUsdcBalanceRaw?: string;
-  lastTopMarketSymbol?: string;
-  lastTopMarketFToken?: string;
+  lastTopMarketAsset?: string;
+  lastHealthFactor?: number;
 }
 
 export type ArtifactKind = 'run_report' | 'state_snapshot';
@@ -70,7 +88,7 @@ export interface AgentStateV1 {
   updatedAt: string;
   runs: AgentRunRecord[];
   actions: {
-    deposits: AgentDepositRecord[];
+    positionActions: AgentPositionActionRecord[];
     tweets: AgentTweetRecord[];
   };
   snapshots: AgentSnapshots;
@@ -82,34 +100,36 @@ export interface AgentMemorySummary {
   walletAddress: string;
   currentRunId?: string;
   pending: AgentPendingTask[];
-  lastDeposit: AgentDepositRecord | null;
-  recentDeposits: AgentDepositRecord[];
+  lastAction: AgentPositionActionRecord | null;
+  recentActions: AgentPositionActionRecord[];
   recentRuns: AgentRunRecord[];
   snapshots: AgentSnapshots;
-  depositSkipReason: string | null;
+  actionSkipReason: string | null;
+  healthAlertPending: AgentPendingTask | null;
   recentArtifacts: AgentArtifactRecord[];
 }
 
-export interface RecordDepositInput {
+export interface RecordPositionActionInput {
   runId: string;
-  fToken: string;
+  protocol: LendingProtocol;
+  action: PositionActionKind;
+  asset: string;
   rawAmount: string;
-  symbol?: string;
-  underlying?: string;
-  status: DepositStatus;
-  txHash?: string;
+  obligationId?: string;
+  status: ActionStatus;
+  digest?: string;
   dryRun: boolean;
 }
 
 export interface RecordTweetInput {
-  depositId?: string;
+  actionId?: string;
   status: TweetStatus;
   text?: string;
   externalId?: string;
 }
 
 const MAX_RUNS = 50;
-const MAX_DEPOSITS = 100;
+const MAX_ACTIONS = 100;
 const MAX_TWEETS = 50;
 const MAX_ARTIFACTS = 50;
 const SUMMARY_MAX_LENGTH = 2000;
@@ -130,19 +150,31 @@ export function createEmptyAgentState(config: AppConfig): AgentStateV1 {
     walletAddress: config.agent.walletAddress.toLowerCase(),
     updatedAt: new Date().toISOString(),
     runs: [],
-    actions: { deposits: [], tweets: [] },
+    actions: { positionActions: [], tweets: [] },
     snapshots: {},
     pending: [],
     artifacts: []
   };
 }
 
-/**
- * Validate and normalize a parsed state object (from any backend). Returns null
- * when the payload is incompatible (wrong version, or a different wallet) so the
- * caller can reset to an empty state.
- */
-export function normalizeAgentState(config: AppConfig, parsed: Partial<AgentStateV1>): AgentStateV1 | null {
+type LegacyState = Partial<AgentStateV1> & {
+  actions?: {
+    deposits?: LegacyDepositRecord[];
+    positionActions?: AgentPositionActionRecord[];
+    tweets?: AgentTweetRecord[];
+  };
+  pending?: Array<{
+    type: string;
+    depositId?: string;
+    actionId?: string;
+    createdAt: string;
+    obligationId?: string;
+    healthFactor?: number;
+    suggestedAction?: 'repay' | 'supply';
+  }>;
+};
+
+export function normalizeAgentState(config: AppConfig, parsed: LegacyState): AgentStateV1 | null {
   if (parsed.version !== 1) {
     return null;
   }
@@ -152,6 +184,48 @@ export function normalizeAgentState(config: AppConfig, parsed: Partial<AgentStat
     return null;
   }
 
+  const positionActions =
+    parsed.actions?.positionActions ??
+    (parsed.actions?.deposits ?? []).map((deposit) => ({
+      id: deposit.id,
+      runId: deposit.runId,
+      protocol: 'suilend' as const,
+      action: 'supply' as const,
+      asset: deposit.symbol ?? deposit.fToken,
+      rawAmount: deposit.rawAmount,
+      status: deposit.status,
+      digest: deposit.txHash,
+      dryRun: deposit.dryRun,
+      createdAt: deposit.createdAt,
+      tweeted: deposit.tweeted,
+      tweetId: deposit.tweetId
+    }));
+
+  const pending: AgentPendingTask[] = (parsed.pending ?? []).map((task) => {
+    if (task.type === 'tweet_deposit') {
+      return {
+        type: 'tweet_action' as const,
+        actionId: task.depositId ?? task.actionId,
+        createdAt: task.createdAt
+      };
+    }
+
+    if (task.type === 'retry_deposit') {
+      return {
+        type: 'retry_action' as const,
+        actionId: task.depositId ?? task.actionId,
+        createdAt: task.createdAt
+      };
+    }
+
+    return task as AgentPendingTask;
+  });
+
+  const tweets = (parsed.actions?.tweets ?? []).map((tweet) => ({
+    ...tweet,
+    actionId: tweet.actionId ?? (tweet as { depositId?: string }).depositId
+  }));
+
   return {
     version: 1,
     agentName: parsed.agentName ?? config.agent.name,
@@ -159,11 +233,11 @@ export function normalizeAgentState(config: AppConfig, parsed: Partial<AgentStat
     updatedAt: parsed.updatedAt ?? new Date().toISOString(),
     runs: parsed.runs ?? [],
     actions: {
-      deposits: parsed.actions?.deposits ?? [],
-      tweets: parsed.actions?.tweets ?? []
+      positionActions,
+      tweets
     },
     snapshots: parsed.snapshots ?? {},
-    pending: parsed.pending ?? [],
+    pending,
     artifacts: parsed.artifacts ?? []
   };
 }
@@ -174,7 +248,7 @@ export function loadAgentState(config: AppConfig, statePath = resolveAgentStateP
   }
 
   const raw = fs.readFileSync(statePath, 'utf8');
-  const parsed = JSON.parse(raw) as Partial<AgentStateV1>;
+  const parsed = JSON.parse(raw) as LegacyState;
   return normalizeAgentState(config, parsed) ?? createEmptyAgentState(config);
 }
 
@@ -210,16 +284,20 @@ export function endRun(state: AgentStateV1, runId: string, summary?: string): vo
   }
 }
 
-export function recordDeposit(state: AgentStateV1, input: RecordDepositInput): AgentDepositRecord {
+export function recordPositionAction(state: AgentStateV1, input: RecordPositionActionInput): AgentPositionActionRecord {
   const id =
-    input.txHash ??
-    (input.dryRun ? `dry-run-${input.runId}-${input.fToken.toLowerCase()}` : `${input.runId}-${input.fToken.toLowerCase()}`);
+    input.digest ??
+    (input.dryRun
+      ? `dry-run-${input.runId}-${input.action}-${input.asset.toLowerCase()}`
+      : `${input.runId}-${input.action}-${input.asset.toLowerCase()}`);
 
-  const existing = state.actions.deposits.find((deposit) => deposit.id === id);
-  const record: AgentDepositRecord = existing ?? {
+  const existing = state.actions.positionActions.find((action) => action.id === id);
+  const record: AgentPositionActionRecord = existing ?? {
     id,
     runId: input.runId,
-    fToken: input.fToken,
+    protocol: input.protocol,
+    action: input.action,
+    asset: input.asset,
     rawAmount: input.rawAmount,
     status: input.status,
     dryRun: input.dryRun,
@@ -228,33 +306,32 @@ export function recordDeposit(state: AgentStateV1, input: RecordDepositInput): A
   };
 
   record.runId = input.runId;
-  record.fToken = input.fToken;
+  record.protocol = input.protocol;
+  record.action = input.action;
+  record.asset = input.asset;
   record.rawAmount = input.rawAmount;
   record.status = input.status;
   record.dryRun = input.dryRun;
-  if (input.symbol) {
-    record.symbol = input.symbol;
+  if (input.obligationId) {
+    record.obligationId = input.obligationId;
   }
-  if (input.underlying) {
-    record.underlying = input.underlying;
-  }
-  if (input.txHash) {
-    record.txHash = input.txHash;
+  if (input.digest) {
+    record.digest = input.digest;
   }
 
   if (!existing) {
-    state.actions.deposits.unshift(record);
-    state.actions.deposits = state.actions.deposits.slice(0, MAX_DEPOSITS);
+    state.actions.positionActions.unshift(record);
+    state.actions.positionActions = state.actions.positionActions.slice(0, MAX_ACTIONS);
   }
 
-  if (record.status === 'confirmed' && !record.dryRun && !record.tweeted) {
+  if (record.status === 'confirmed' && !record.dryRun && !record.tweeted && record.action === 'supply') {
     const alreadyPending = state.pending.some(
-      (task) => task.type === 'tweet_deposit' && task.depositId === record.id
+      (task) => task.type === 'tweet_action' && task.actionId === record.id
     );
     if (!alreadyPending) {
       state.pending.push({
-        type: 'tweet_deposit',
-        depositId: record.id,
+        type: 'tweet_action',
+        actionId: record.id,
         createdAt: new Date().toISOString()
       });
     }
@@ -270,8 +347,8 @@ export function recordTweet(state: AgentStateV1, input: RecordTweetInput): Agent
     createdAt: new Date().toISOString()
   };
 
-  if (input.depositId) {
-    record.depositId = input.depositId;
+  if (input.actionId) {
+    record.actionId = input.actionId;
   }
   if (input.text) {
     record.text = input.text;
@@ -283,21 +360,39 @@ export function recordTweet(state: AgentStateV1, input: RecordTweetInput): Agent
   state.actions.tweets.unshift(record);
   state.actions.tweets = state.actions.tweets.slice(0, MAX_TWEETS);
 
-  if (input.depositId && input.status === 'posted') {
-    const deposit = state.actions.deposits.find((entry) => entry.id === input.depositId);
-    if (deposit) {
-      deposit.tweeted = true;
+  if (input.actionId && input.status === 'posted') {
+    const action = state.actions.positionActions.find((entry) => entry.id === input.actionId);
+    if (action) {
+      action.tweeted = true;
       if (input.externalId) {
-        deposit.tweetId = input.externalId;
+        action.tweetId = input.externalId;
       }
     }
 
     state.pending = state.pending.filter(
-      (task) => !(task.type === 'tweet_deposit' && task.depositId === input.depositId)
+      (task) => !(task.type === 'tweet_action' && task.actionId === input.actionId)
     );
   }
 
   return record;
+}
+
+export function queueHealthAlert(
+  state: AgentStateV1,
+  input: Omit<AgentPendingTask, 'type' | 'createdAt'> & { type?: never }
+): AgentPendingTask {
+  state.pending = state.pending.filter((task) => task.type !== 'health_alert');
+  const task: AgentPendingTask = {
+    type: 'health_alert',
+    createdAt: new Date().toISOString(),
+    ...input
+  };
+  state.pending.push(task);
+  return task;
+}
+
+export function clearHealthAlert(state: AgentStateV1): void {
+  state.pending = state.pending.filter((task) => task.type !== 'health_alert');
 }
 
 export function recordArtifact(
@@ -315,52 +410,54 @@ export function recordArtifact(
 }
 
 export function getMemorySummary(state: AgentStateV1, config: AppConfig, currentRunId?: string): AgentMemorySummary {
-  const skip = shouldSkipDeposit(state, config);
+  const skip = shouldSkipWriteAction(state, config);
   return {
     walletAddress: state.walletAddress,
     currentRunId,
     pending: state.pending,
-    lastDeposit: state.actions.deposits[0] ?? null,
-    recentDeposits: state.actions.deposits.slice(0, 5),
+    lastAction: state.actions.positionActions[0] ?? null,
+    recentActions: state.actions.positionActions.slice(0, 5),
     recentRuns: state.runs.slice(0, 3),
     snapshots: state.snapshots,
-    depositSkipReason: skip.skip ? skip.reason : null,
+    actionSkipReason: skip.skip ? skip.reason : null,
+    healthAlertPending: state.pending.find((task) => task.type === 'health_alert') ?? null,
     recentArtifacts: state.artifacts.slice(0, 5)
   };
 }
 
-export function shouldSkipDeposit(
+export function shouldSkipWriteAction(
   state: AgentStateV1,
   config: AppConfig,
-  fTokenAddress?: string
+  asset?: string,
+  action: PositionActionKind = 'supply'
 ): { skip: boolean; reason: string | null } {
-  const pendingTweet = state.pending.find((task) => task.type === 'tweet_deposit');
-  if (pendingTweet) {
-    return { skip: true, reason: 'Complete pending tweet_deposit before making another deposit' };
+  const pendingTweet = state.pending.find((task) => task.type === 'tweet_action');
+  if (pendingTweet && action === 'supply') {
+    return { skip: true, reason: 'Complete pending tweet_action before making another supply' };
   }
 
-  if (!fTokenAddress) {
+  if (!asset) {
     return { skip: false, reason: null };
   }
 
-  const normalized = fTokenAddress.toLowerCase();
-  const cutoff = Date.now() - config.agent.depositCooldownMs;
-  const recent = state.actions.deposits.find((deposit) => {
-    if (deposit.dryRun || deposit.status !== 'confirmed') {
+  const normalized = asset.toLowerCase();
+  const cutoff = Date.now() - config.agent.actionCooldownMs;
+  const recent = state.actions.positionActions.find((entry) => {
+    if (entry.dryRun || entry.status !== 'confirmed') {
       return false;
     }
 
-    if (deposit.fToken.toLowerCase() !== normalized) {
+    if (entry.asset.toLowerCase() !== normalized || entry.action !== action) {
       return false;
     }
 
-    return new Date(deposit.createdAt).getTime() >= cutoff;
+    return new Date(entry.createdAt).getTime() >= cutoff;
   });
 
   if (recent) {
     return {
       skip: true,
-      reason: `Confirmed deposit to ${recent.fToken} within deposit cooldown (${config.agent.depositCooldownMs}ms)`
+      reason: `Confirmed ${recent.action} on ${recent.asset} within action cooldown (${config.agent.actionCooldownMs}ms)`
     };
   }
 
@@ -369,4 +466,37 @@ export function shouldSkipDeposit(
 
 export function updateSnapshots(state: AgentStateV1, partial: AgentSnapshots): void {
   state.snapshots = { ...state.snapshots, ...partial };
+}
+
+/** Backward-compatible deposit API used by legacy tests and migration paths. */
+export interface RecordDepositInput {
+  runId: string;
+  fToken: string;
+  rawAmount: string;
+  symbol?: string;
+  underlying?: string;
+  status: ActionStatus;
+  txHash?: string;
+  dryRun: boolean;
+}
+
+export function recordDeposit(state: AgentStateV1, input: RecordDepositInput): AgentPositionActionRecord {
+  return recordPositionAction(state, {
+    runId: input.runId,
+    protocol: 'suilend',
+    action: 'supply',
+    asset: input.symbol ?? input.fToken,
+    rawAmount: input.rawAmount,
+    status: input.status,
+    digest: input.txHash,
+    dryRun: input.dryRun
+  });
+}
+
+export function shouldSkipDeposit(
+  state: AgentStateV1,
+  config: AppConfig,
+  fTokenAddress?: string
+): { skip: boolean; reason: string | null } {
+  return shouldSkipWriteAction(state, config, fTokenAddress, 'supply');
 }

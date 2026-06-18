@@ -1,15 +1,17 @@
-import { loadConfig } from './utils/config.js';
-import { describePrivateKeyConfig } from './utils/privateKey.js';
-import { createLogger } from './utils/logger.js';
 import { MoltxSocialClient } from './clients/moltxSocialClient.js';
 import { MoltxSwapClient } from './clients/moltxSwapClient.js';
-import { FluidClient } from './clients/fluidClient.js';
-import { FluidExecutionClient } from './clients/fluidExecutionClient.js';
+import { NaviClient } from './clients/naviClient.js';
 import { OpenAIResponsesClient } from './clients/openaiResponsesClient.js';
+import { ScallopClient } from './clients/scallopClient.js';
+import { SuiExecutionClient } from './clients/sui/suiExecutionClient.js';
+import { SuilendClient } from './clients/suilendClient.js';
 import { XClient } from './clients/xClient.js';
 import { WalrusBlobClient } from './clients/walrusBlobClient.js';
 import { WalrusMemoryClient } from './clients/walrusMemoryClient.js';
 import { createAutonomousAgent } from './core/autonomousAgent.js';
+import { loadConfig } from './utils/config.js';
+import { describeSuiPrivateKeyConfig } from './utils/privateKey.js';
+import { createLogger } from './utils/logger.js';
 import type { AppConfig, Clients, Logger } from './types.js';
 
 async function main() {
@@ -17,7 +19,17 @@ async function main() {
   const config = loadConfig();
   const logger = createLogger(config.logLevel);
 
-  const clients = {
+  const suiExecution = new SuiExecutionClient({
+    rpcUrl: config.sui.rpcUrl,
+    network: config.sui.network,
+    privateKey: config.sui.privateKey,
+    walletAddress: config.agent.walletAddress,
+    usdcCoinType: config.sui.usdcCoinType,
+    suiCoinType: config.sui.suiCoinType,
+    logger
+  });
+
+  const clients: Clients = {
     social: new MoltxSocialClient({
       baseUrl: config.moltx.apiBase,
       logger
@@ -26,17 +38,20 @@ async function main() {
       baseUrl: config.swap.baseUrl,
       logger
     }),
-    fluid: new FluidClient({
-      baseUrl: config.fluid.baseUrl,
+    suiExecution,
+    suilend: new SuilendClient({
+      execution: suiExecution,
+      config,
       logger
     }),
-    fluidExecution: new FluidExecutionClient({
-      accountMode: config.evm.accountMode,
-      rpcUrl: config.evm.baseRpcUrl,
-      privateKey: config.evm.privateKey,
-      walletAddress: config.agent.walletAddress,
-      bundlerUrl: config.evm.smartAccountBundlerUrl,
-      usePaymaster: config.evm.smartAccountUsePaymaster,
+    navi: new NaviClient({
+      execution: suiExecution,
+      config,
+      logger
+    }),
+    scallop: new ScallopClient({
+      network: config.sui.network,
+      config,
       logger
     }),
     openai: new OpenAIResponsesClient({
@@ -67,13 +82,13 @@ async function main() {
   };
 
   if (command === 'doctor') {
-    runDoctor(config, logger);
+    await runDoctor(config, clients, logger);
     return;
   }
 
   if (command === 'account:address') {
-    const addressInfo = await clients.fluidExecution.getExecutionAddress();
-    logger.info('Derived execution account', addressInfo);
+    const address = clients.suiExecution.getAddress();
+    logger.info('Derived Sui address', { address });
     return;
   }
 
@@ -100,19 +115,25 @@ async function main() {
   }
 }
 
-function runDoctor(config: AppConfig, logger: Logger): void {
+async function runDoctor(config: AppConfig, clients: Clients, logger: Logger): Promise<void> {
   logger.info('Running configuration doctor...');
   logger.info(`Agent: ${config.agent.name}`);
   logger.info(`Mission: ${config.agent.mission}`);
   logger.info(`Wallet: ${config.agent.walletAddress}`);
-  logger.info(`Account mode: ${config.evm.accountMode}`);
   logger.info(`OpenAI model: ${config.openai.model}`);
   logger.info(`Dry run: ${config.runtime.dryRun}`);
   logger.info(`Autonomy interval ms: ${config.runtime.autonomyIntervalMs}`);
   logger.info(`Agent state path: ${config.agent.statePath}`);
-  logger.info(`Deposit cooldown ms: ${config.agent.depositCooldownMs}`);
-  logger.info(`Fluid lending enabled: ${config.fluid.enabled}`);
-  logger.info(`Fluid position creation enabled: ${config.fluid.enablePositionCreation}`);
+  logger.info(`Action cooldown ms: ${config.agent.actionCooldownMs}`);
+  logger.info(`Sui network: ${config.sui.network}`);
+  logger.info(`Sui RPC URL: ${config.sui.rpcUrl}`);
+  logger.info(`Sui lending enabled: ${config.sui.enabled}`);
+  logger.info(`Sui position creation enabled: ${config.sui.enablePositionCreation}`);
+  logger.info(`Sui borrow enabled: ${config.sui.enableBorrow}`);
+  logger.info(`Suilend enabled: ${config.sui.protocols.suilend.enabled}`);
+  logger.info(`NAVI reads enabled: ${config.sui.protocols.navi.enabled}`);
+  logger.info(`Scallop reads enabled: ${config.sui.protocols.scallop.enabled}`);
+  logger.info(`Min health factor: ${config.sui.minHealthFactor}`);
   logger.info(`Swap quotes enabled: ${config.swap.enableQuotes}`);
   logger.info(`Autonomous swaps enabled: ${config.swap.enableAutonomousSwaps}`);
   logger.info(`X posting enabled: ${config.x.enablePosting}`);
@@ -129,40 +150,59 @@ function runDoctor(config: AppConfig, logger: Logger): void {
     logger.warn('MEMWAL_ENABLED=true but MEMWAL_ACCOUNT_ID or MEMWAL_DELEGATE_KEY is empty. Semantic memory will be disabled.');
   }
 
-  if (!config.agent.walletAddress || config.agent.walletAddress === '0x0000000000000000000000000000000000000000') {
-    logger.warn('Set AGENT_WALLET_ADDRESS before expecting meaningful live DeFi reads.');
+  if (!config.agent.walletAddress) {
+    logger.warn('Set AGENT_WALLET_ADDRESS before expecting meaningful live Sui reads.');
   }
 
   if (!config.openai.apiKey) {
     logger.warn('Set OPENAI_API_KEY before running the autonomous agent.');
   }
 
-  if (config.fluid.enablePositionCreation) {
-    if (!config.evm.baseRpcUrl) {
-      logger.warn('ENABLE_FLUID_POSITION_CREATION=true but BASE_RPC_URL is empty.');
-    }
-
-    const keyStatus = describePrivateKeyConfig(process.env.AGENT_PRIVATE_KEY ?? '');
-    if (!keyStatus.configured) {
-      logger.warn('ENABLE_FLUID_POSITION_CREATION=true but AGENT_PRIVATE_KEY is empty.');
-    } else if (!keyStatus.valid) {
-      logger.warn('AGENT_PRIVATE_KEY is set but invalid for signing', { hint: keyStatus.hint });
-    }
-
-    if (config.evm.accountMode === 'smart' && !config.evm.smartAccountBundlerUrl) {
-      logger.warn('ACCOUNT_MODE=smart but SMART_ACCOUNT_BUNDLER_URL is empty.');
-    }
-
-    if (config.fluid.allowedFTokens.length === 0) {
-      logger.warn('ENABLE_FLUID_POSITION_CREATION=true but FLUID_ALLOWED_FTOKENS is empty. No Fluid deposits will be permitted.');
+  const keyStatus = describeSuiPrivateKeyConfig(process.env.AGENT_SUI_PRIVATE_KEY ?? '');
+  if (!keyStatus.configured) {
+    logger.warn('AGENT_SUI_PRIVATE_KEY is empty. On-chain writes will fail.');
+  } else if (!keyStatus.valid) {
+    logger.warn('AGENT_SUI_PRIVATE_KEY is set but invalid for signing', { hint: keyStatus.hint });
+  } else if (config.agent.walletAddress) {
+    try {
+      const derived = clients.suiExecution.getAddress();
+      if (derived !== config.agent.walletAddress) {
+        logger.warn('AGENT_WALLET_ADDRESS does not match derived Sui address', {
+          configured: config.agent.walletAddress,
+          derived
+        });
+      } else {
+        logger.info('Sui wallet address matches derived key', { address: derived });
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn('Could not derive Sui address from key', { error: message });
     }
   }
 
-  if (config.evm.accountMode === 'smart') {
-    logger.info('Smart account type: coinbase');
-    if (!config.evm.smartAccountBundlerUrl) {
-      logger.warn('ACCOUNT_MODE=smart but SMART_ACCOUNT_BUNDLER_URL is empty. Smart account writes will fail.');
+  if (config.sui.enablePositionCreation || config.sui.enableBorrow) {
+    if (!config.sui.rpcUrl) {
+      logger.warn('Position writes enabled but SUI_RPC_URL is empty.');
     }
+
+    if (!keyStatus.configured || !keyStatus.valid) {
+      logger.warn('Position writes enabled but AGENT_SUI_PRIVATE_KEY is missing or invalid.');
+    }
+
+    if (config.sui.allowedAssets.length === 0) {
+      logger.warn('Position writes enabled but SUI_ALLOWED_ASSETS is empty. All assets are permitted by default.');
+    }
+  }
+
+  if (config.sui.enabled && !config.sui.protocols.suilend.enabled) {
+    logger.warn('ENABLE_SUI_LENDING=true but ENABLE_SUILEND=false. Suilend reads and writes will be unavailable.');
+  }
+
+  const rpcOk = await clients.suiExecution.pingRpc();
+  if (rpcOk) {
+    logger.info('Sui RPC ping succeeded');
+  } else {
+    logger.warn('Sui RPC ping failed. Check SUI_RPC_URL and network connectivity.');
   }
 
   if (!config.runtime.dryRun) {

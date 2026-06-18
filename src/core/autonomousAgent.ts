@@ -6,6 +6,7 @@ import {
   resolveAgentStatePath,
   type AgentStateV1
 } from './agentMemory.js';
+import { runHealthGuard } from './healthGuard.js';
 import { createMemoryStore, type SaveOptions } from './memoryStore.js';
 import { createToolRegistry } from './toolRegistry.js';
 import type {
@@ -34,6 +35,8 @@ export function createAutonomousAgent({ config, clients, logger }: AutonomousAge
       const runId = beginRun(state);
       const persist = (opts?: SaveOptions) => store.save(state, opts);
 
+      const healthGuard = await runHealthGuard({ state, runId, clients, config, logger, persist });
+
       const toolRegistry = createToolRegistry({
         config,
         clients,
@@ -48,7 +51,8 @@ export function createAutonomousAgent({ config, clients, logger }: AutonomousAge
         memoryBackend: config.walrus.memoryBackend,
         walrusMemory: clients.walrusMemory.enabled,
         runId,
-        statePath
+        statePath,
+        healthGuard
       });
 
       const recalled = await recallLongTermMemory({ clients, config });
@@ -59,7 +63,7 @@ export function createAutonomousAgent({ config, clients, logger }: AutonomousAge
             {
               type: 'input_text',
               text: [
-                buildRunPrompt(config),
+                buildRunPrompt(config, healthGuard),
                 '---',
                 'Agent memory (from prior runs):',
                 JSON.stringify(getMemorySummary(state, config, runId), null, 2),
@@ -110,7 +114,7 @@ async function recallLongTermMemory({
   }
 
   const wallet = config.agent.walletAddress || 'the configured agent';
-  const query = `Past DeFi treasury decisions, deposits, market APRs, and blockers for wallet ${wallet}`;
+  const query = `Past Suilend and Sui treasury decisions, supplies, borrows, market APRs, health factor events, and blockers for wallet ${wallet}`;
   const memories = await clients.walrusMemory.recall(query, 5);
   if (memories.length === 0) {
     return null;
@@ -183,17 +187,19 @@ function buildRunReport({
   outputText: string;
 }): string {
   const summary = getMemorySummary(state, config, runId);
-  const deposits = summary.recentDeposits.length
-    ? summary.recentDeposits
+  const recentActions = summary.recentActions.length
+    ? summary.recentActions
         .map(
-          (deposit) =>
-            `- ${deposit.status} ${deposit.rawAmount} into ${deposit.fToken}` +
-            `${deposit.txHash ? ` (tx ${deposit.txHash})` : ''}${deposit.dryRun ? ' [dry-run]' : ''}`
+          (action) =>
+            `- ${action.status} ${action.action} ${action.rawAmount} ${action.asset} on ${action.protocol}` +
+            `${action.digest ? ` (digest ${action.digest})` : ''}${action.dryRun ? ' [dry-run]' : ''}`
         )
         .join('\n')
     : '- none';
   const pending = summary.pending.length
-    ? summary.pending.map((task) => `- ${task.type} (${task.depositId})`).join('\n')
+    ? summary.pending
+        .map((task) => `- ${task.type}${task.actionId ? ` (${task.actionId})` : ''}`)
+        .join('\n')
     : '- none';
 
   return [
@@ -203,15 +209,16 @@ function buildRunReport({
     `- Wallet: ${state.walletAddress}`,
     `- Generated: ${new Date().toISOString()}`,
     `- Dry run: ${config.runtime.dryRun}`,
-    `- Top market: ${summary.snapshots.lastTopMarketSymbol ?? 'n/a'}`,
+    `- Top market: ${summary.snapshots.lastTopMarketAsset ?? 'n/a'}`,
+    `- Health factor: ${summary.snapshots.lastHealthFactor ?? 'n/a'}`,
     '',
     '## Outcome',
     '',
     outputText,
     '',
-    '## Recent deposits',
+    '## Recent position actions',
     '',
-    deposits,
+    recentActions,
     '',
     '## Pending tasks',
     '',
@@ -276,32 +283,35 @@ async function runToolLoop({ clients, config, logger, toolRegistry, input }: Too
 }
 
 function treasuryModeEnabled(config: AppConfig): boolean {
-  return !config.runtime.dryRun && config.fluid.enabled && config.fluid.enablePositionCreation;
+  return !config.runtime.dryRun && config.sui.enabled && config.sui.enablePositionCreation;
 }
 
 function buildInstructions(config: AppConfig): string {
   const lines = [
-    `You are ${config.agent.name}, an autonomous DeFi operations agent.`,
+    `You are ${config.agent.name}, an autonomous DeFi operations agent on Sui.`,
     `Mission: ${config.agent.mission}`,
     'You operate conservatively. Your job is to observe, reason, and act only through the provided tools.',
-    'Never claim that you executed a swap, deposit, or borrow unless the tool result says it executed.',
+    'Never claim that you executed a swap, supply, borrow, withdraw, or repay unless the tool result says it executed.',
     'Respect local policy gates: dry-run mode and swap execution flags are final.',
     'Always start each cycle by calling inspect_runtime_policy.',
-    'Call get_agent_memory early to see prior deposits, pending tasks, and deposit cooldown status.',
+    'Call get_agent_memory early to see prior position actions, pending tasks, health alerts, and action cooldown status.',
     'When useful, call recall_memory to retrieve durable cross-session context (past decisions, market notes, blockers) from Walrus Memory, and remember_insight to store a concise, durable insight worth recalling next run.',
-    'If a wallet is configured and Fluid lending is enabled, call get_fluid_positions AND get_fluid_markets.',
-    'Call get_wallet_balances before any deposit to see idle USDC and treasury hints.',
-    'When deciding where to deposit, compare get_fluid_markets totalApr across allowlisted fTokens (higher is better). stakingApr and merkleRewardsApr are extras not in totalApr.',
-    'If memory shows pending tweet_deposit, do NOT call create_fluid_position; use post_deposit_update instead. If X posting is blocked, report the config blocker.',
-    'Deposits are recorded automatically in agent memory; do not duplicate deposits within the cooldown window.',
+    'A health guard may auto-repay critical Suilend borrows before you run; do not fight or duplicate that action.',
+    'If a wallet is configured and Sui lending is enabled, call get_suilend_obligation AND get_suilend_markets.',
+    'Call get_lending_rates_comparison to compare Suilend vs NAVI vs Scallop supply/borrow APRs for allowlisted assets.',
+    'Call get_sui_balances before any supply to see idle USDC and treasury hints.',
+    'When deciding where to supply, compare get_suilend_markets totalApr across allowlisted assets (higher is better).',
+    'If memory shows pending tweet_action, do NOT call suilend_supply; use post_action_update instead. If X posting is blocked, report the config blocker.',
+    'Position actions are recorded automatically in agent memory; do not duplicate supplies within the cooldown window.',
+    'Borrow only when simulated health factor stays above SUI_MIN_HEALTH_FACTOR.',
     'If an action is blocked, explain the blocker and the next configuration change needed.',
     'Keep final summaries short and operational: observations, attempted actions, blocked actions, next check.'
   ];
 
   if (treasuryModeEnabled(config)) {
     lines.push(
-      'Treasury mode is ON: when USDC balance meets MIN_IDLE_USDC_RAW and memory allows, call create_fluid_position into the highest-APR allowlisted market (usually fUSDC via market usdc) using depositableRaw from get_wallet_balances, capped by FLUID_MAX_SUPPLY_AMOUNT_RAW.',
-      'After a confirmed deposit, memory will queue tweet_deposit; attempt post_deposit_update when appropriate.'
+      'Treasury mode is ON: when USDC balance meets MIN_IDLE_USDC_RAW and memory allows, call suilend_supply into the highest-APR allowlisted market using supplyableRaw from get_sui_balances, capped by SUI_MAX_SUPPLY_AMOUNT_RAW.',
+      'After a confirmed supply, memory will queue tweet_action; attempt post_action_update when appropriate.'
     );
   } else {
     lines.push('Prefer read-only monitoring when dry-run or position creation is disabled.');
@@ -310,23 +320,35 @@ function buildInstructions(config: AppConfig): string {
   return lines.join('\n');
 }
 
-function buildRunPrompt(config: AppConfig): string {
+function buildRunPrompt(
+  config: AppConfig,
+  healthGuard: { executed: boolean; reason?: string }
+): string {
   const cycleType = treasuryModeEnabled(config) ? 'treasury' : 'monitoring';
 
   const toolOrder = treasuryModeEnabled(config)
-    ? 'inspect_runtime_policy → get_agent_memory → get_fluid_positions → get_fluid_markets → get_wallet_balances → (create_fluid_position OR post_deposit_update if pending)'
-    : 'inspect_runtime_policy → get_agent_memory → get_fluid_positions → get_fluid_markets';
+    ? 'inspect_runtime_policy → get_agent_memory → get_suilend_obligation → get_lending_rates_comparison → get_suilend_markets → get_sui_balances → (suilend_supply|withdraw|borrow|repay OR post_action_update if pending)'
+    : 'inspect_runtime_policy → get_agent_memory → get_suilend_obligation → get_lending_rates_comparison → get_suilend_markets';
+
+  const healthGuardNote = healthGuard.executed
+    ? 'Health guard auto-repay executed before this cycle.'
+    : healthGuard.reason
+      ? `Health guard: ${healthGuard.reason}.`
+      : 'Health guard: no action taken.';
 
   return [
-    `Run one autonomous DeFi ${cycleType} cycle.`,
+    `Run one autonomous Sui ${cycleType} cycle.`,
     `Wallet: ${config.agent.walletAddress || '(not configured)'}`,
     `Dry run: ${config.runtime.dryRun}`,
-    `Fluid lending enabled: ${config.fluid.enabled}`,
-    `Fluid position creation: ${config.fluid.enablePositionCreation}`,
+    `Sui lending enabled: ${config.sui.enabled}`,
+    `Sui position creation: ${config.sui.enablePositionCreation}`,
+    `Sui borrow enabled: ${config.sui.enableBorrow}`,
+    `Network: ${config.sui.network}`,
     `Swap quotes enabled: ${config.swap.enableQuotes}`,
     `Autonomous swaps enabled: ${config.swap.enableAutonomousSwaps}`,
+    healthGuardNote,
     `Suggested tool order: ${toolOrder}.`,
-    'Report memory pending tasks, ranked markets by totalApr, wallet USDC, and any deposit or tweet attempts.'
+    'Report memory pending tasks, ranked Suilend markets by totalApr, rate comparison rows, wallet USDC, health factor, and any position action or tweet attempts.'
   ].join('\n');
 }
 
