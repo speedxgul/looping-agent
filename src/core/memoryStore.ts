@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { WalrusBlobClient } from '../clients/walrusBlobClient.js';
 import type { AppConfig, Logger } from '../types.js';
 import {
-  createEmptyAgentState,
+  loadAgentState,
   normalizeAgentState,
   resolveAgentStatePath,
   saveAgentState,
@@ -31,13 +31,7 @@ export class FileMemoryStore implements MemoryStore {
   ) {}
 
   async load(): Promise<AgentStateV1> {
-    if (!fs.existsSync(this.statePath)) {
-      return createEmptyAgentState(this.config);
-    }
-
-    const raw = fs.readFileSync(this.statePath, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<AgentStateV1>;
-    return normalizeAgentState(this.config, parsed) ?? createEmptyAgentState(this.config);
+    return loadAgentState(this.config, this.statePath);
   }
 
   async save(state: AgentStateV1): Promise<void> {

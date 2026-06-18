@@ -14,6 +14,11 @@ An extensible v1 scaffold for an autonomous DeFi agent. OpenAI decides what to d
 
 This version does not require writing Solidity contracts. It is an off-chain agent that talks to existing protocols and APIs.
 
+## Branches
+
+- **`base/fluid`** — frozen snapshot of this Base/Fluid (EVM) agent. Use it to reference or run the EVM version.
+- **`main`** — continues from the same codebase and is being evolved toward a **Sui-native** build. Expect the EVM execution layer to be swapped for the Sui TS SDK over time while the agent loop, memory, and tool-registry architecture stay the same.
+
 ## Quick Start
 
 ```bash
@@ -29,17 +34,19 @@ Set `AGENT_WALLET_ADDRESS` before using live position checks.
 
 ```text
 src/
-  clients/        MoltX, Fluid, swap, signing, and Walrus (blob + MemWal) clients
+  clients/        MoltX, Fluid, swap, X, OpenAI, and Walrus (blob + MemWal) clients
   core/           autonomous agent loop, agent memory, memory store, policy, tools
-  utils/          config, http, amounts, logging helpers
+  utils/          config, http, amounts, private key, logging helpers
 scripts/
   memwal-keygen.ts   generate a MemWal delegate key
 data/
   agent-state.json   local persistent memory / Walrus cache (gitignored)
   walrus-pointer.json latest Walrus state blob id (gitignored)
 docs/
-  architecture.md runtime notes
-  moltx.md        endpoint notes from live skill files
+  architecture.md  layers and runtime notes
+  autonomy.md      planner loop, tools, and safety model
+  deployment.md    daemon and deployment notes
+  moltx.md         endpoint notes from live skill files
 ```
 
 ## Current V1 Behavior

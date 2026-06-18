@@ -265,8 +265,3 @@ export type AgentAction =
   | { type: 'OBSERVE'; summary: string; details?: Record<string, unknown> }
   | { type: 'SWAP_EXECUTE'; route?: SwapRoute | null; details?: Record<string, unknown> }
   | { type: 'FLUID_SUPPLY'; details?: Record<string, unknown> };
-
-export interface StrategyResult {
-  observations: Array<{ summary: string; details?: Record<string, unknown> }>;
-  actions: AgentAction[];
-}
