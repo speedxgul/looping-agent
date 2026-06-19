@@ -1,5 +1,5 @@
 import { SuiGrpcClient } from '@mysten/sui/grpc';
-import type { Transaction } from '@mysten/sui/transactions';
+import { coinWithBalance, type Transaction, type TransactionResult } from '@mysten/sui/transactions';
 import type { ExecuteTransactionResult, Logger, SuiBalancesResponse, SuiNetwork } from '../../types.js';
 import { formatUnits } from '../../utils/amounts.js';
 import { createSuiKeypair, deriveSuiAddress } from '../../utils/privateKey.js';
@@ -92,6 +92,22 @@ export class SuiExecutionClient {
         formatted: formatUnits(usdcRaw, 6)
       }
     };
+  }
+
+  /**
+   * Build a `Coin<T>` PTB argument of exactly `rawAmount`, auto-selecting and
+   * merging the sender's coins (and splitting from the gas coin for native SUI).
+   * Used by protocol clients (e.g. NAVI) whose deposit/repay PTBs take a coin input.
+   * Resolves against the sender set in `signAndExecute`, so call within that tx.
+   */
+  coinForAmount(tx: Transaction, coinType: string, rawAmount: string | bigint): TransactionResult {
+    return tx.add(coinWithBalance({ type: coinType, balance: BigInt(rawAmount) }));
+  }
+
+  /** Raw (smallest-unit) balance of an arbitrary coin type for the owner. */
+  async getRawBalance(coinType: string, owner = this.walletAddress || this.getAddress()): Promise<string> {
+    const balance = await this.client.getBalance({ owner, coinType });
+    return readBalanceAmount(balance as unknown as { balance?: Record<string, unknown> });
   }
 
   async signAndExecute(transaction: Transaction): Promise<ExecuteTransactionResult> {

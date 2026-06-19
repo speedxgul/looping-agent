@@ -10,10 +10,15 @@ import {
   SuilendClient as SuilendSdkClient
 } from '@suilend/sdk';
 import { createObligationIfNoneExists, sendObligationToUser } from '@suilend/sdk/lib/transactions';
+import { BigNumber } from 'bignumber.js';
 import type {
   AppConfig,
   ExecuteTransactionResult,
+  LendingProtocol,
+  LendingProtocolClient,
+  LendingWriteParams,
   Logger,
+  NormalizedPositions,
   SuilendMarketsResponse,
   SuilendObligationResponse
 } from '../../types.js';
@@ -30,7 +35,9 @@ interface SuilendContext {
   reserveMap: Record<string, ParsedReserve>;
 }
 
-export class SuilendClient {
+export class SuilendClient implements LendingProtocolClient {
+  readonly name: LendingProtocol = 'suilend';
+  readonly requiresObligationForWrite = true;
   private readonly execution: SuiExecutionClient;
   private readonly config: AppConfig;
   private readonly logger: Logger;
@@ -40,6 +47,10 @@ export class SuilendClient {
     this.execution = execution;
     this.config = config;
     this.logger = logger;
+  }
+
+  get enabled(): boolean {
+    return this.config.sui.protocols.suilend.enabled;
   }
 
   private async getContext(): Promise<SuilendContext> {
@@ -125,6 +136,23 @@ export class SuilendClient {
     return toObligationResponse(parsed, cap.id);
   }
 
+  /** Interface-normalized view of the Suilend obligation. */
+  async getPositions(owner = this.config.agent.walletAddress): Promise<NormalizedPositions> {
+    const o = await this.getObligation(owner);
+    return {
+      protocol: 'suilend',
+      healthFactor: o.healthFactor,
+      borrowLimitUsd: o.borrowLimitUsd,
+      weightedBorrowsUsd: o.weightedBorrowsUsd,
+      depositedAmountUsd: o.depositedAmountUsd,
+      borrowedAmountUsd: o.borrowedAmountUsd,
+      deposits: o.deposits,
+      borrows: o.borrows,
+      obligationId: o.obligationId,
+      obligationOwnerCapId: o.obligationOwnerCapId
+    };
+  }
+
   async buildSupplyTx({
     coinType,
     rawAmount,
@@ -197,13 +225,48 @@ export class SuilendClient {
     obligationOwnerCapId: string;
     obligationId: string;
   }): Promise<Transaction> {
-    const { client } = await this.getContext();
+    const { client, reserveMap } = await this.getContext();
     const tx = new Transaction();
     const obligation = await client.getObligation(obligationId);
     await client.refreshAll(tx, obligation);
-    const withdrawn = await client.withdraw(obligationOwnerCapId, obligationId, coinType, rawAmount, tx);
+
+    // Suilend's withdraw takes a cToken amount, not the underlying. Convert the
+    // requested underlying raw amount into cTokens via the deposit's exchange rate
+    // (depositedCtokenAmount / depositedUnderlyingRaw), clamped to what's held.
+    const ctokenValue = this.underlyingToCtokenValue(obligation, reserveMap, coinType, rawAmount);
+    const withdrawn = await client.withdraw(obligationOwnerCapId, obligationId, coinType, ctokenValue, tx);
     tx.transferObjects([withdrawn], this.config.agent.walletAddress);
     return tx;
+  }
+
+  private underlyingToCtokenValue(
+    rawObligation: Parameters<typeof parseObligation>[0],
+    reserveMap: Record<string, ParsedReserve>,
+    coinType: string,
+    underlyingRawAmount: string
+  ): string {
+    const parsed = parseObligation(rawObligation, reserveMap);
+    const normalized = normalizeCoin(coinType);
+    const deposit = parsed.deposits.find((d) => normalizeCoin(d.coinType) === normalized);
+    if (!deposit) {
+      throw new Error(`No Suilend deposit found for ${coinType}`);
+    }
+
+    const decimals = deposit.reserve.mintDecimals;
+    const depositedUnderlyingRaw = deposit.depositedAmount.times(new BigNumber(10).pow(decimals));
+    const requested = new BigNumber(underlyingRawAmount);
+
+    // Withdraw-all (requested >= deposited): use the full cToken balance to avoid
+    // rounding the request above what's held.
+    if (requested.gte(depositedUnderlyingRaw)) {
+      return deposit.depositedCtokenAmount.integerValue(BigNumber.ROUND_FLOOR).toFixed(0);
+    }
+
+    const ctokens = requested
+      .times(deposit.depositedCtokenAmount)
+      .div(depositedUnderlyingRaw)
+      .integerValue(BigNumber.ROUND_FLOOR);
+    return BigNumber.max(ctokens, new BigNumber(0)).toFixed(0);
   }
 
   async buildBorrowTx({
@@ -249,52 +312,84 @@ export class SuilendClient {
     return tx;
   }
 
-  async executeSupply(params: {
-    coinType: string;
-    rawAmount: string;
-    obligationOwnerCapId?: string;
-    obligationId?: string;
-  }): Promise<ExecuteTransactionResult> {
-    const tx = await this.buildSupplyTx(params);
+  async executeSupply({
+    coinType,
+    rawAmount,
+    positions
+  }: LendingWriteParams): Promise<ExecuteTransactionResult> {
+    const tx = await this.buildSupplyTx({
+      coinType,
+      rawAmount,
+      obligationOwnerCapId: positions?.obligationOwnerCapId ?? undefined,
+      obligationId: positions?.obligationId ?? undefined
+    });
     return this.execution.signAndExecute(tx);
   }
 
-  async executeWithdraw(params: {
-    coinType: string;
-    rawAmount: string;
-    obligationOwnerCapId: string;
-    obligationId: string;
-  }): Promise<ExecuteTransactionResult> {
-    const tx = await this.buildWithdrawTx(params);
+  async executeWithdraw({
+    coinType,
+    rawAmount,
+    positions
+  }: LendingWriteParams): Promise<ExecuteTransactionResult> {
+    const tx = await this.buildWithdrawTx({
+      coinType,
+      rawAmount,
+      ...this.requireObligationHandles(positions)
+    });
     return this.execution.signAndExecute(tx);
   }
 
-  async executeBorrow(params: {
-    coinType: string;
-    rawAmount: string;
-    obligationOwnerCapId: string;
-    obligationId: string;
-  }): Promise<ExecuteTransactionResult> {
-    const tx = await this.buildBorrowTx(params);
+  async executeBorrow({
+    coinType,
+    rawAmount,
+    positions
+  }: LendingWriteParams): Promise<ExecuteTransactionResult> {
+    const tx = await this.buildBorrowTx({
+      coinType,
+      rawAmount,
+      ...this.requireObligationHandles(positions)
+    });
     return this.execution.signAndExecute(tx);
   }
 
-  async executeRepay(params: {
-    coinType: string;
-    rawAmount: string;
-    obligationId: string;
-  }): Promise<ExecuteTransactionResult> {
-    const tx = await this.buildRepayTx(params);
+  async executeRepay({
+    coinType,
+    rawAmount,
+    positions
+  }: LendingWriteParams): Promise<ExecuteTransactionResult> {
+    const { obligationId } = this.requireObligationHandles(positions);
+    const tx = await this.buildRepayTx({ coinType, rawAmount, obligationId });
     return this.execution.signAndExecute(tx);
   }
 
-  simulateHealthFactorAfterBorrow(obligation: SuilendObligationResponse, borrowUsd: number): number {
-    const weighted = obligation.weightedBorrowsUsd + borrowUsd;
+  async simulateHealthFactorAfterBorrow({
+    borrowUsd,
+    positions
+  }: {
+    coinType: string;
+    rawAmount: string;
+    borrowUsd: number;
+    positions: NormalizedPositions;
+  }): Promise<number> {
+    const weighted = positions.weightedBorrowsUsd + borrowUsd;
     if (weighted <= 0) {
       return Number.POSITIVE_INFINITY;
     }
 
-    return obligation.borrowLimitUsd / weighted;
+    return positions.borrowLimitUsd / weighted;
+  }
+
+  private requireObligationHandles(positions?: NormalizedPositions): {
+    obligationOwnerCapId: string;
+    obligationId: string;
+  } {
+    if (!positions?.obligationId || !positions.obligationOwnerCapId) {
+      throw new Error('Suilend obligation and owner cap are required for this action');
+    }
+    return {
+      obligationOwnerCapId: positions.obligationOwnerCapId,
+      obligationId: positions.obligationId
+    };
   }
 
   private shorthandFor(coinType: string): string {

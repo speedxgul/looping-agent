@@ -1,16 +1,21 @@
-import type {
-  AgentAction,
-  AppConfig,
-  Clients,
-  ExecuteTransactionResult,
-  LendingRateRow,
-  Logger,
-  OpenAIFunctionCallItem,
-  OpenAIToolDefinition,
-  PositionActionKind,
-  SuiBalancesResponse,
-  SuilendMarket,
-  SuilendObligationResponse
+import { normalizeStructTag } from '@mysten/sui/utils';
+import {
+  type AgentAction,
+  type AppConfig,
+  type Clients,
+  type ExecuteTransactionResult,
+  LENDING_ACTION_TYPE,
+  type LendingMarket,
+  type LendingProtocol,
+  type LendingProtocolClient,
+  type LendingRateRow,
+  type Logger,
+  type NormalizedPositions,
+  type OpenAIFunctionCallItem,
+  type OpenAIToolDefinition,
+  type PositionActionKind,
+  type SuiBalancesResponse,
+  type SuilendMarket
 } from '../types.js';
 import { formatUnits } from '../utils/amounts.js';
 import { explorerTxUrl } from '../utils/suiNetwork.js';
@@ -25,6 +30,42 @@ import {
 } from './agentMemory.js';
 import type { SaveOptions } from './memoryStore.js';
 import { evaluateActionPolicy } from './policy.js';
+
+const PROTOCOLS: LendingProtocol[] = ['suilend', 'navi', 'scallop'];
+
+/** Resolve a protocol name to its client (all implement LendingProtocolClient). */
+function protocolClient(clients: Clients, protocol: LendingProtocol): LendingProtocolClient {
+  if (protocol === 'navi') return clients.navi;
+  if (protocol === 'scallop') return clients.scallop;
+  return clients.suilend;
+}
+
+function parseProtocolArg(value: unknown): LendingProtocol {
+  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return raw === 'navi' || raw === 'scallop' ? raw : 'suilend';
+}
+
+/** Force the protocol arg without tripping the duplicate-key overwrite check. */
+function forceProtocol(args: Record<string, unknown>, protocol: LendingProtocol): Record<string, unknown> {
+  return Object.assign({}, args, { protocol });
+}
+
+/**
+ * Compare two Sui coin types robustly: protocols return them in different forms
+ * (NAVI omits 0x, SUI is the short 0x2 vs padded 0x00..02). Normalize both sides.
+ */
+function sameCoinType(a: string, b: string): boolean {
+  return canonicalCoinType(a) === canonicalCoinType(b);
+}
+
+function canonicalCoinType(value: string): string {
+  const withPrefix = value.includes('::') && !value.startsWith('0x') ? `0x${value}` : value;
+  try {
+    return normalizeStructTag(withPrefix).toLowerCase();
+  } catch {
+    return value.toLowerCase();
+  }
+}
 
 export interface AgentMemoryContext {
   state: AgentStateV1;
@@ -224,54 +265,38 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
       };
     },
 
+    get_best_supply_target: async () => getBestSupplyTarget(config, clients),
+
+    get_lending_positions: async (args) => {
+      if (!config.sui.enabled) {
+        return { ok: false, error: 'Sui lending is disabled' };
+      }
+      const protocol = parseProtocolArg(args.protocol);
+      const positions = await protocolClient(clients, protocol).getPositions(config.agent.walletAddress);
+      if (protocol === 'suilend') {
+        updateSnapshots(memory.state, {
+          lastSuilendObligation: positions,
+          lastHealthFactor: positions.healthFactor
+        });
+        await memory.persist({ durable: false });
+      }
+      return { ok: true, wallet: config.agent.walletAddress, ...positions };
+    },
+
+    lending_supply: async (args) => runLendingWrite({ kind: 'supply', args, config, clients, memory }),
+    lending_withdraw: async (args) => runLendingWrite({ kind: 'withdraw', args, config, clients, memory }),
+    lending_borrow: async (args) => runLendingWrite({ kind: 'borrow', args, config, clients, memory }),
+    lending_repay: async (args) => runLendingWrite({ kind: 'repay', args, config, clients, memory }),
+
+    // Deprecated Suilend-specific aliases (force protocol=suilend) for back-compat.
     suilend_supply: async (args) =>
-      runSuilendWrite({
-        kind: 'supply',
-        actionType: 'SUILEND_SUPPLY',
-        args,
-        config,
-        clients,
-        memory,
-        requireObligation: false,
-        validateBalance: true
-      }),
-
+      runLendingWrite({ kind: 'supply', args: forceProtocol(args, 'suilend'), config, clients, memory }),
     suilend_withdraw: async (args) =>
-      runSuilendWrite({
-        kind: 'withdraw',
-        actionType: 'SUILEND_WITHDRAW',
-        args,
-        config,
-        clients,
-        memory,
-        requireObligation: true,
-        validateBalance: false
-      }),
-
+      runLendingWrite({ kind: 'withdraw', args: forceProtocol(args, 'suilend'), config, clients, memory }),
     suilend_borrow: async (args) =>
-      runSuilendWrite({
-        kind: 'borrow',
-        actionType: 'SUILEND_BORROW',
-        args,
-        config,
-        clients,
-        memory,
-        requireObligation: true,
-        validateBalance: false,
-        simulateHealthFactor: true
-      }),
-
+      runLendingWrite({ kind: 'borrow', args: forceProtocol(args, 'suilend'), config, clients, memory }),
     suilend_repay: async (args) =>
-      runSuilendWrite({
-        kind: 'repay',
-        actionType: 'SUILEND_REPAY',
-        args,
-        config,
-        clients,
-        memory,
-        requireObligation: true,
-        validateBalance: true
-      }),
+      runLendingWrite({ kind: 'repay', args: forceProtocol(args, 'suilend'), config, clients, memory }),
 
     post_action_update: postActionUpdate,
 
@@ -342,154 +367,99 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
   };
 }
 
-interface SuilendWriteOptions {
+interface LendingWriteOptions {
   kind: PositionActionKind;
-  actionType: Extract<
-    AgentAction['type'],
-    'SUILEND_SUPPLY' | 'SUILEND_WITHDRAW' | 'SUILEND_BORROW' | 'SUILEND_REPAY'
-  >;
   args: ToolArgs;
   config: AppConfig;
   clients: Clients;
   memory: AgentMemoryContext;
-  requireObligation: boolean;
-  validateBalance: boolean;
-  simulateHealthFactor?: boolean;
 }
 
-async function runSuilendWrite(options: SuilendWriteOptions): Promise<Record<string, unknown>> {
-  const {
-    kind,
-    actionType,
-    args,
-    config,
-    clients,
-    memory,
-    requireObligation,
-    validateBalance,
-    simulateHealthFactor
-  } = options;
+async function runLendingWrite(options: LendingWriteOptions): Promise<Record<string, unknown>> {
+  const { kind, args, config, clients, memory } = options;
+  const protocol = parseProtocolArg(args.protocol);
+  const client = protocolClient(clients, protocol);
 
   const asset = resolveAsset(args, config);
   if (!asset) {
-    return {
-      ok: false,
-      blocked: true,
-      reason: 'asset is required (or use market shorthand usdc/sui)',
-      dryRun: config.runtime.dryRun
-    };
+    return blocked('asset is required (or use market shorthand usdc/sui)', config);
   }
 
-  const coinType = clients.suilend.resolveCoinType(asset);
+  const coinType = client.resolveCoinType(asset);
   const rawAmount = readStringArg(args.rawAmount, '0');
 
   const memorySkip = shouldSkipWriteAction(memory.state, config, asset, kind);
   if (memorySkip.skip) {
-    return { ok: false, blocked: true, reason: memorySkip.reason, dryRun: config.runtime.dryRun };
+    return blocked(memorySkip.reason ?? 'blocked by memory', config);
   }
 
   let amount: bigint;
   try {
     amount = BigInt(rawAmount);
   } catch {
-    return {
-      ok: false,
-      blocked: true,
-      reason: 'rawAmount must be a valid integer string',
-      dryRun: config.runtime.dryRun
-    };
+    return blocked('rawAmount must be a valid integer string', config);
   }
-
   if (amount <= 0n) {
-    return {
-      ok: false,
-      blocked: true,
-      reason: 'rawAmount must be greater than zero',
-      dryRun: config.runtime.dryRun
-    };
+    return blocked('rawAmount must be greater than zero', config);
   }
 
-  let obligation: SuilendObligationResponse | undefined;
-  if (requireObligation || simulateHealthFactor) {
-    const fetchedObligation = await clients.suilend.getObligation(config.agent.walletAddress);
-    obligation = fetchedObligation;
-    if (requireObligation && (!fetchedObligation.obligationId || !fetchedObligation.obligationOwnerCapId)) {
-      return {
-        ok: false,
-        blocked: true,
-        reason: 'No Suilend obligation found for wallet',
-        dryRun: config.runtime.dryRun
-      };
+  // Positions are needed for any non-supply action (obligation handles) and to
+  // simulate the borrow health factor. Supply creates/uses positions internally.
+  let positions: NormalizedPositions | undefined;
+  if (kind !== 'supply') {
+    positions = await client.getPositions(config.agent.walletAddress);
+    if (client.requiresObligationForWrite && !positions.obligationId) {
+      return blocked(`No ${protocol} position/obligation found for wallet`, config);
     }
   }
 
+  // Balance checks for actions that spend wallet coins.
+  const validateBalance = kind === 'supply' || kind === 'repay';
   if (validateBalance && config.agent.walletAddress) {
     const balances = await clients.suiExecution.getCoinBalances(config.agent.walletAddress);
     const balanceRaw = balanceRawForCoinType(balances, coinType, config);
 
     if (kind === 'supply' && coinType.toLowerCase() === config.sui.usdcCoinType.toLowerCase()) {
       if (balanceRaw < config.sui.minIdleRaw) {
-        return {
-          ok: false,
-          blocked: true,
-          reason: `Wallet USDC balance ${balances.usdc.formatted} is below MIN_IDLE_USDC_RAW`,
-          dryRun: config.runtime.dryRun
-        };
+        return blocked(`Wallet USDC balance ${balances.usdc.formatted} is below MIN_IDLE_USDC_RAW`, config);
       }
     }
 
     if (balanceRaw < amount) {
-      return {
-        ok: false,
-        blocked: true,
-        reason: `rawAmount exceeds wallet balance (${balanceRaw.toString()})`,
-        dryRun: config.runtime.dryRun
-      };
+      return blocked(`rawAmount exceeds wallet balance (${balanceRaw.toString()})`, config);
     }
   }
 
-  const details: Record<string, unknown> = {
-    asset,
-    coinType,
-    rawAmount
-  };
-
-  if (obligation?.obligationId) {
-    details.obligationId = obligation.obligationId;
-  }
-  if (obligation?.obligationOwnerCapId) {
-    details.obligationOwnerCapId = obligation.obligationOwnerCapId;
+  const details: Record<string, unknown> = { protocol, asset, coinType, rawAmount };
+  if (positions?.obligationId) {
+    details.obligationId = positions.obligationId;
   }
 
-  if (simulateHealthFactor) {
-    if (!obligation) {
-      return {
-        ok: false,
-        blocked: true,
-        reason: 'Unable to load Suilend obligation for health factor simulation',
-        dryRun: config.runtime.dryRun
-      };
-    }
-
-    const borrowUsd = await estimateBorrowUsd(clients, coinType, rawAmount);
-    details.projectedHealthFactor = clients.suilend.simulateHealthFactorAfterBorrow(obligation, borrowUsd);
+  if (kind === 'borrow') {
+    const borrowUsd = await estimateBorrowUsd(client, coinType, rawAmount);
+    details.projectedHealthFactor = await client.simulateHealthFactorAfterBorrow({
+      coinType,
+      rawAmount,
+      borrowUsd,
+      positions: positions ?? (await client.getPositions(config.agent.walletAddress))
+    });
     details.projectedBorrowUsd = borrowUsd;
   }
 
-  const action: AgentAction = { type: actionType, details };
+  const action: AgentAction = { type: LENDING_ACTION_TYPE[kind], details };
   const decision = evaluateActionPolicy(action, config);
   if (!decision.allowed) {
-    return { ok: false, blocked: true, reason: decision.reason, dryRun: config.runtime.dryRun };
+    return blocked(decision.reason, config);
   }
 
   if (config.runtime.dryRun) {
     const record = recordPositionAction(memory.state, {
       runId: memory.runId,
-      protocol: 'suilend',
+      protocol,
       action: kind,
       asset,
       rawAmount,
-      ...(obligation?.obligationId ? { obligationId: obligation.obligationId } : {}),
+      ...(positions?.obligationId ? { obligationId: positions.obligationId } : {}),
       status: 'planned',
       dryRun: true
     });
@@ -499,6 +469,7 @@ async function runSuilendWrite(options: SuilendWriteOptions): Promise<Record<str
       ok: true,
       dryRun: true,
       plannedAction: {
+        protocol,
         action: kind,
         asset,
         coinType,
@@ -513,48 +484,30 @@ async function runSuilendWrite(options: SuilendWriteOptions): Promise<Record<str
 
   await clients.suiExecution.assertWalletMatches();
 
+  const params = { coinType, asset, rawAmount, positions };
   let result: ExecuteTransactionResult;
   switch (kind) {
     case 'supply':
-      result = await clients.suilend.executeSupply({
-        coinType,
-        rawAmount,
-        obligationOwnerCapId: obligation?.obligationOwnerCapId ?? undefined,
-        obligationId: obligation?.obligationId ?? undefined
-      });
+      result = await client.executeSupply(params);
       break;
     case 'withdraw':
-      result = await clients.suilend.executeWithdraw({
-        coinType,
-        rawAmount,
-        obligationOwnerCapId: obligation!.obligationOwnerCapId!,
-        obligationId: obligation!.obligationId!
-      });
+      result = await client.executeWithdraw(params);
       break;
     case 'borrow':
-      result = await clients.suilend.executeBorrow({
-        coinType,
-        rawAmount,
-        obligationOwnerCapId: obligation!.obligationOwnerCapId!,
-        obligationId: obligation!.obligationId!
-      });
+      result = await client.executeBorrow(params);
       break;
     case 'repay':
-      result = await clients.suilend.executeRepay({
-        coinType,
-        rawAmount,
-        obligationId: obligation!.obligationId!
-      });
+      result = await client.executeRepay(params);
       break;
   }
 
   const record = recordPositionAction(memory.state, {
     runId: memory.runId,
-    protocol: 'suilend',
+    protocol,
     action: kind,
     asset,
     rawAmount,
-    ...(obligation?.obligationId ? { obligationId: obligation.obligationId } : {}),
+    ...(positions?.obligationId ? { obligationId: positions.obligationId } : {}),
     status: 'confirmed',
     digest: result.digest,
     dryRun: false
@@ -564,10 +517,66 @@ async function runSuilendWrite(options: SuilendWriteOptions): Promise<Record<str
   return {
     ok: true,
     dryRun: false,
+    protocol,
     recordedActionId: record.id,
     pendingTweet: kind === 'supply' && memory.state.pending.some((task) => task.actionId === record.id),
     digest: result.digest,
     result
+  };
+}
+
+function blocked(reason: string, config: AppConfig): Record<string, unknown> {
+  return { ok: false, blocked: true, reason, dryRun: config.runtime.dryRun };
+}
+
+/**
+ * Deterministic yield-router helper: rank net supply APR across write-enabled
+ * protocols for allowlisted assets and return the best target plus the runner-up
+ * delta (so the model/policy can apply rebalance hysteresis).
+ */
+async function getBestSupplyTarget(config: AppConfig, clients: Clients): Promise<Record<string, unknown>> {
+  if (!config.sui.enabled) {
+    return { ok: false, error: 'Sui lending is disabled' };
+  }
+
+  const assets = defaultComparisonAssets(config);
+  const candidates: Array<{ protocol: LendingProtocol; asset: string; coinType: string; supplyApr: number }> =
+    [];
+
+  for (const protocol of PROTOCOLS) {
+    if (!config.sui.protocols[protocol]?.write || !config.sui.allowedProtocols.includes(protocol)) {
+      continue;
+    }
+    const client = protocolClient(clients, protocol);
+    let markets: LendingMarket[] = [];
+    try {
+      markets = (await client.getMarkets()).markets;
+    } catch {
+      continue;
+    }
+    for (const asset of assets) {
+      const coinType = client.resolveCoinType(asset);
+      const market = markets.find((m) => sameCoinType(m.coinType, coinType));
+      if (market) {
+        candidates.push({ protocol, asset, coinType, supplyApr: market.supplyApr });
+      }
+    }
+  }
+
+  candidates.sort((a, b) => b.supplyApr - a.supplyApr);
+  const best = candidates[0] ?? null;
+  const runnerUp =
+    candidates.find((c) => best && (c.protocol !== best.protocol || c.asset !== best.asset)) ?? null;
+  const deltaBps = best && runnerUp ? Math.round((best.supplyApr - runnerUp.supplyApr) * 100) : null;
+
+  return {
+    ok: true,
+    network: config.sui.network,
+    best,
+    runnerUp,
+    deltaBps,
+    rebalanceMinAprDeltaBps: config.sui.rebalanceMinAprDeltaBps,
+    candidates
   };
 }
 
@@ -689,8 +698,9 @@ async function buildDefaultActionPostText(
   const symbol = inferActionSymbol(action, market);
   const decimals = market?.decimals ?? inferAssetDecimals(action.asset, config);
   const amount = formatUnits(action.rawAmount, decimals);
+  const protocolLabel = capitalize(action.protocol);
   const parts = [
-    `Treasury update: supplied ${amount} ${symbol} into Suilend ${market?.symbol ?? 'market'} on Sui.`
+    `Treasury update: supplied ${amount} ${symbol} into ${protocolLabel} ${market?.symbol ?? 'market'} on Sui.`
   ];
 
   if (market?.totalApr !== undefined) {
@@ -707,21 +717,22 @@ async function buildDefaultActionPostText(
 async function findActionMarket(
   action: AgentPositionActionRecord,
   clients: Clients
-): Promise<SuilendMarket | null> {
+): Promise<LendingMarket | null> {
   try {
-    const coinType = clients.suilend.resolveCoinType(action.asset);
-    const result = await clients.suilend.getMarkets();
-    return (
-      result.markets.find(
-        (market: SuilendMarket) => market.coinType.toLowerCase() === coinType.toLowerCase()
-      ) ?? null
-    );
+    const client = protocolClient(clients, action.protocol);
+    const coinType = client.resolveCoinType(action.asset);
+    const result = await client.getMarkets();
+    return result.markets.find((market: LendingMarket) => sameCoinType(market.coinType, coinType)) ?? null;
   } catch {
     return null;
   }
 }
 
-function inferActionSymbol(action: AgentPositionActionRecord, market: SuilendMarket | null): string {
+function capitalize(value: string): string {
+  return value.length ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+}
+
+function inferActionSymbol(action: AgentPositionActionRecord, market: LendingMarket | null): string {
   if (action.asset.length <= 8 && !action.asset.includes('::')) {
     return action.asset.toUpperCase();
   }
@@ -757,11 +768,13 @@ function defaultComparisonAssets(config: AppConfig): string[] {
   return unique.filter((asset) => config.sui.allowedAssets.some((entry) => entry.toLowerCase() === asset));
 }
 
-async function estimateBorrowUsd(clients: Clients, coinType: string, rawAmount: string): Promise<number> {
-  const result = await clients.suilend.getMarkets();
-  const market = result.markets.find(
-    (entry: SuilendMarket) => entry.coinType.toLowerCase() === coinType.toLowerCase()
-  );
+async function estimateBorrowUsd(
+  client: LendingProtocolClient,
+  coinType: string,
+  rawAmount: string
+): Promise<number> {
+  const result = await client.getMarkets();
+  const market = result.markets.find((entry: LendingMarket) => sameCoinType(entry.coinType, coinType));
   if (!market) {
     return 0;
   }
@@ -911,81 +924,97 @@ function definitions(): OpenAIToolDefinition[] {
     },
     {
       type: 'function',
-      name: 'suilend_supply',
+      name: 'get_best_supply_target',
       description:
-        'Supply collateral into Suilend. Blocked while tweet_action is pending or within action cooldown. Respects policy, dry-run, and SUI_ALLOWED_ASSETS.',
+        'Rank net supply APR across write-enabled protocols (Suilend, NAVI, Scallop) for allowlisted assets. Returns the best protocol+asset to supply, the runner-up, and the APR delta (bps) for rebalance decisions. Use before lending_supply.',
+      parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
+    },
+    {
+      type: 'function',
+      name: 'get_lending_positions',
+      description:
+        'Read normalized positions (deposits, borrows, health factor, borrow limit) for a given protocol on the configured wallet.',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          market: {
-            type: 'string',
-            enum: ['usdc', 'sui'],
-            description: 'Optional configured shorthand for a default asset.'
-          },
-          asset: {
-            type: 'string',
-            description: 'Asset shorthand (usdc, sui) or full coin type. Required unless market resolves it.'
-          },
-          coinType: {
-            type: 'string',
-            description: 'Full Sui coin type. Alternative to asset.'
-          },
-          rawAmount: {
-            type: 'string',
-            description: 'Raw token amount in smallest units to supply.'
-          }
+          protocol: { type: 'string', enum: ['suilend', 'navi', 'scallop'] }
         },
-        required: ['rawAmount']
+        required: ['protocol']
       }
     },
     {
       type: 'function',
-      name: 'suilend_withdraw',
-      description: 'Withdraw supplied collateral from Suilend.',
+      name: 'lending_supply',
+      description:
+        'Supply (lend) an asset into a lending protocol to earn yield. Blocked while tweet_action is pending or within action cooldown. Respects policy, dry-run, SUI_ALLOWED_PROTOCOLS, and SUI_ALLOWED_ASSETS.',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
+          protocol: { type: 'string', enum: ['suilend', 'navi', 'scallop'], description: 'Target protocol.' },
+          market: {
+            type: 'string',
+            enum: ['usdc', 'sui'],
+            description: 'Optional shorthand for a default asset.'
+          },
+          asset: { type: 'string', description: 'Asset shorthand (usdc, sui) or full coin type.' },
+          coinType: { type: 'string', description: 'Full Sui coin type. Alternative to asset.' },
+          rawAmount: { type: 'string', description: 'Raw token amount in smallest units to supply.' }
+        },
+        required: ['protocol', 'rawAmount']
+      }
+    },
+    {
+      type: 'function',
+      name: 'lending_withdraw',
+      description: 'Withdraw a supplied asset from a lending protocol.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          protocol: { type: 'string', enum: ['suilend', 'navi', 'scallop'] },
           market: { type: 'string', enum: ['usdc', 'sui'] },
           asset: { type: 'string' },
           coinType: { type: 'string' },
           rawAmount: { type: 'string', description: 'Raw token amount in smallest units to withdraw.' }
         },
-        required: ['rawAmount', 'asset']
+        required: ['protocol', 'rawAmount', 'asset']
       }
     },
     {
       type: 'function',
-      name: 'suilend_borrow',
+      name: 'lending_borrow',
       description:
-        'Borrow from Suilend. Simulates projected health factor and blocks if below SUI_MIN_HEALTH_FACTOR.',
+        'Borrow an asset from a lending protocol against existing collateral. Simulates projected health factor and blocks if below SUI_MIN_HEALTH_FACTOR.',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
+          protocol: { type: 'string', enum: ['suilend', 'navi', 'scallop'] },
           market: { type: 'string', enum: ['usdc', 'sui'] },
           asset: { type: 'string' },
           coinType: { type: 'string' },
           rawAmount: { type: 'string', description: 'Raw token amount in smallest units to borrow.' }
         },
-        required: ['rawAmount', 'asset']
+        required: ['protocol', 'rawAmount', 'asset']
       }
     },
     {
       type: 'function',
-      name: 'suilend_repay',
-      description: 'Repay borrowed debt on Suilend.',
+      name: 'lending_repay',
+      description: 'Repay borrowed debt on a lending protocol.',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
+          protocol: { type: 'string', enum: ['suilend', 'navi', 'scallop'] },
           market: { type: 'string', enum: ['usdc', 'sui'] },
           asset: { type: 'string' },
           coinType: { type: 'string' },
           rawAmount: { type: 'string', description: 'Raw token amount in smallest units to repay.' }
         },
-        required: ['rawAmount', 'asset']
+        required: ['protocol', 'rawAmount', 'asset']
       }
     },
     {
@@ -1024,14 +1053,21 @@ function definitions(): OpenAIToolDefinition[] {
   ];
 }
 
+const WRITE_TOOLS = new Set([
+  'lending_supply',
+  'lending_withdraw',
+  'lending_borrow',
+  'lending_repay',
+  'suilend_supply',
+  'suilend_withdraw',
+  'suilend_borrow',
+  'suilend_repay'
+]);
+
 function redactToolArgs(toolName: string, args: ToolArgs): Record<string, unknown> {
-  if (
-    toolName === 'suilend_supply' ||
-    toolName === 'suilend_withdraw' ||
-    toolName === 'suilend_borrow' ||
-    toolName === 'suilend_repay'
-  ) {
+  if (WRITE_TOOLS.has(toolName)) {
     return {
+      protocol: args.protocol,
       market: args.market,
       asset: args.asset,
       coinType: args.coinType,

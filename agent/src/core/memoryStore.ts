@@ -19,7 +19,7 @@ export interface SaveOptions {
 }
 
 export interface MemoryStore {
-  load(): Promise<AgentStateV1>;
+  load(): Promise<AgentStateV1>; // AgentStateV1 and interfaces defined in agentMemory.ts
   save(state: AgentStateV1, opts?: SaveOptions): Promise<void>;
 }
 

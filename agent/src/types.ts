@@ -57,14 +57,19 @@ export interface AppConfig {
     maxBorrowRaw: bigint;
     minHealthFactor: number;
     explorerBaseUrl: string;
+    /** Protocols the agent may write to (supply/withdraw/borrow/repay). */
+    allowedProtocols: LendingProtocol[];
+    /** Min supply-APR improvement (basis points) before moving existing funds. */
+    rebalanceMinAprDeltaBps: number;
     defaultAssets: {
       usdc: string;
       sui: string;
     };
     protocols: {
-      suilend: { enabled: boolean };
-      navi: { enabled: boolean };
-      scallop: { enabled: boolean };
+      // `enabled` gates reads; `write` gates supply/withdraw/borrow/repay.
+      suilend: { enabled: boolean; write: boolean };
+      navi: { enabled: boolean; write: boolean };
+      scallop: { enabled: boolean; write: boolean };
     };
   };
   walrus: {
@@ -155,6 +160,79 @@ export interface LendingRatesComparisonResponse {
   rows: LendingRateRow[];
 }
 
+/** A generic lending market row. Suilend reserves already match this shape. */
+export type LendingMarket = SuilendMarket;
+export type LendingMarketsResponse = SuilendMarketsResponse;
+
+/** A single supplied/borrowed leg of a position, normalized across protocols. */
+export interface NormalizedPosition {
+  coinType: string;
+  symbol: string;
+  amount: string;
+  amountUsd: number;
+  side: 'deposit' | 'borrow';
+}
+
+/**
+ * A wallet's lending position on one protocol, normalized so the agent loop,
+ * policy, and health guard can treat Suilend / NAVI / Scallop uniformly.
+ * `obligation*` handles are protocol-specific and only populated where the
+ * protocol's write PTBs need them (Suilend: obligation + ownerCap; Scallop:
+ * obligation + key; NAVI: address-based, none).
+ */
+export interface NormalizedPositions {
+  protocol: LendingProtocol;
+  healthFactor: number;
+  borrowLimitUsd: number;
+  weightedBorrowsUsd: number;
+  depositedAmountUsd: number;
+  borrowedAmountUsd: number;
+  deposits: NormalizedPosition[];
+  borrows: NormalizedPosition[];
+  obligationId?: string | null;
+  obligationOwnerCapId?: string | null;
+  obligationKeyId?: string | null;
+}
+
+export interface LendingWriteParams {
+  coinType: string;
+  asset: string;
+  rawAmount: string;
+  /** Pre-fetched positions (carry obligation handles); fetched lazily if omitted. */
+  positions?: NormalizedPositions;
+}
+
+/**
+ * Common surface every lending protocol client implements so the tool registry,
+ * policy, and health guard route by protocol without protocol-specific branches.
+ */
+export interface LendingProtocolClient {
+  readonly name: LendingProtocol;
+  readonly enabled: boolean;
+  /** True when a write needs an obligation object (Suilend, Scallop) vs address-based (NAVI). */
+  readonly requiresObligationForWrite: boolean;
+  resolveCoinType(asset: string): string;
+  isAssetAllowed(coinType: string): boolean;
+  getMarkets(): Promise<LendingMarketsResponse>;
+  getPositions(owner?: string): Promise<NormalizedPositions>;
+  executeSupply(params: LendingWriteParams): Promise<ExecuteTransactionResult>;
+  executeWithdraw(params: LendingWriteParams): Promise<ExecuteTransactionResult>;
+  executeBorrow(params: LendingWriteParams): Promise<ExecuteTransactionResult>;
+  executeRepay(params: LendingWriteParams): Promise<ExecuteTransactionResult>;
+  /**
+   * Projected health factor if `borrowUsd` more were borrowed. Async because NAVI
+   * and Scallop run on-chain/portfolio simulations; Suilend computes it locally.
+   * Convention matches Suilend: HF = borrowLimitUsd / weightedBorrowsUsd, liquidation
+   * risk as HF approaches 1, so the policy floor (SUI_MIN_HEALTH_FACTOR) is uniform.
+   */
+  simulateHealthFactorAfterBorrow(params: {
+    coinType: string;
+    rawAmount: string;
+    borrowUsd: number;
+    positions: NormalizedPositions;
+  }): Promise<number>;
+}
+
 export interface OpenAIResponse {
   output?: OpenAIOutputItem[];
   output_text?: string;
@@ -197,8 +275,20 @@ export interface OpenAIInputItem {
   [key: string]: unknown;
 }
 
+export type LendingActionType = 'LENDING_SUPPLY' | 'LENDING_WITHDRAW' | 'LENDING_BORROW' | 'LENDING_REPAY';
+
+/** Maps a position action kind to its policy action type. */
+export const LENDING_ACTION_TYPE: Record<PositionActionKind, LendingActionType> = {
+  supply: 'LENDING_SUPPLY',
+  withdraw: 'LENDING_WITHDRAW',
+  borrow: 'LENDING_BORROW',
+  repay: 'LENDING_REPAY'
+};
+
 export type AgentAction =
   | { type: 'OBSERVE'; summary: string; details?: Record<string, unknown> }
+  | { type: LendingActionType; details?: Record<string, unknown> }
+  // Deprecated Suilend-specific aliases — still accepted by policy for back-compat.
   | { type: 'SUILEND_SUPPLY'; details?: Record<string, unknown> }
   | { type: 'SUILEND_WITHDRAW'; details?: Record<string, unknown> }
   | { type: 'SUILEND_BORROW'; details?: Record<string, unknown> }

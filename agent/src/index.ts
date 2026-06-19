@@ -40,6 +40,7 @@ async function main() {
       logger
     }),
     scallop: new ScallopClient({
+      execution: suiExecution,
       network: config.sui.network,
       config,
       logger
@@ -131,6 +132,12 @@ async function runDoctor(config: AppConfig, clients: Clients, logger: Logger): P
   logger.info(`Suilend enabled: ${config.sui.protocols.suilend.enabled}`);
   logger.info(`NAVI reads enabled: ${config.sui.protocols.navi.enabled}`);
   logger.info(`Scallop reads enabled: ${config.sui.protocols.scallop.enabled}`);
+  const writeProtocols = (['suilend', 'navi', 'scallop'] as const)
+    .filter((p) => config.sui.protocols[p].write && config.sui.allowedProtocols.includes(p))
+    .join(', ');
+  logger.info(`Write-enabled protocols: ${writeProtocols || '(none)'}`);
+  logger.info(`Allowed protocols: ${config.sui.allowedProtocols.join(', ')}`);
+  logger.info(`Rebalance min APR delta (bps): ${config.sui.rebalanceMinAprDeltaBps}`);
   logger.info(`Min health factor: ${config.sui.minHealthFactor}`);
   logger.info(`X posting enabled: ${config.x.enablePosting}`);
   logger.info(`Memory backend: ${config.walrus.memoryBackend}`);
