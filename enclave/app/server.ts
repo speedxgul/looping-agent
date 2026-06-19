@@ -12,8 +12,16 @@ const PORT = 8080;
 function loadKey(): Uint8Array {
   const env = process.env.ENCLAVE_PRIVATE_KEY;
   if (env) return hexToBytes(env.replace(/^0x/, ''));
-  console.warn('[dev] ENCLAVE_PRIVATE_KEY not set — using fixed dev key (NOT for production)');
-  return hexToBytes('11'.repeat(32));
+  // The fixed dev key is PUBLIC (committed in the repo) — refuse it unless DEV=1 is
+  // set explicitly, so a real deploy can never accidentally run a forgeable key.
+  if (process.env.DEV === '1') {
+    console.warn('[DEV] using the fixed, PUBLIC dev key — never use this in production');
+    return hexToBytes('11'.repeat(32));
+  }
+  throw new Error(
+    'ENCLAVE_PRIVATE_KEY is not set. In a real enclave the key is provisioned inside the ' +
+      'TEE (e.g. via Seal, gated by PCR). For local dev, set DEV=1 to use the fixed test key.'
+  );
 }
 
 runSelfTest(); // aborts boot if BCS/signing drifted from move/sources/decision.move

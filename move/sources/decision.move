@@ -11,6 +11,7 @@ module treasury_agent::decision;
 use enclave::enclave::{Self, Enclave};
 use sui::clock::Clock;
 use sui::coin::Coin;
+use sui::table::{Self, Table};
 use treasury_agent::capability::{Self, AgentCap, Treasury};
 
 /// Domain separator so an enclave signature for one app can't be replayed in another.
@@ -18,6 +19,8 @@ const DECISION_INTENT: u8 = 0;
 
 #[error]
 const EInvalidSignature: vector<u8> = b"Decision is not signed by the registered enclave";
+#[error]
+const EReplayedOrStaleNonce: vector<u8> = b"Decision nonce was already consumed or is stale (replay)";
 
 /// One-time witness binding the registered `Enclave<DECISION>` to this app.
 public struct DECISION has drop {}
@@ -31,17 +34,29 @@ public struct DecisionPayload has copy, drop {
     nonce: u64,
 }
 
+/// Tracks the highest decision nonce consumed per treasury, so a single enclave
+/// signature can be executed at most once (replay / double-release protection).
+public struct DecisionRegistry has key {
+    id: UID,
+    last_nonce: Table<ID, u64>,
+}
+
 fun init(otw: DECISION, ctx: &mut TxContext) {
     // The deployer holds the Cap to create/update the EnclaveConfig (PCRs).
     transfer::public_transfer(enclave::new_cap(otw, ctx), ctx.sender());
+    transfer::share_object(DecisionRegistry {
+        id: object::new(ctx),
+        last_nonce: table::new(ctx),
+    });
 }
 
 /// Verify the enclave-signed decision, then release the bounded amount through the
 /// capability. Returns the `Coin` into the PTB so the caller composes the downstream
 /// supply (e.g. into a lending protocol) in the same transaction.
 public fun execute_decision<C>(
-    enclave: &Enclave<DECISION>,
+    registry: &mut DecisionRegistry,
     treasury: &mut Treasury<C>,
+    enclave: &Enclave<DECISION>,
     cap: &AgentCap,
     amount: u64,
     nonce: u64,
@@ -50,16 +65,29 @@ public fun execute_decision<C>(
     clock: &Clock,
     ctx: &mut TxContext,
 ): Coin<C> {
-    let payload = DecisionPayload {
-        treasury: object::id(treasury),
-        amount,
-        nonce,
-    };
+    let treasury_id = object::id(treasury);
+    let payload = DecisionPayload { treasury: treasury_id, amount, nonce };
     let ok = enclave.verify_signature(DECISION_INTENT, timestamp_ms, payload, &signature);
     assert!(ok, EInvalidSignature);
 
+    // One enclave signature = one release: reject replayed/stale nonces.
+    consume_nonce(registry, treasury_id, nonce);
+
     // Capability layer still enforces per-tx / period caps, expiry, and revocation.
     capability::release_for_action(treasury, cap, amount, clock, ctx)
+}
+
+/// Reject a replayed or stale nonce, then record it as the latest for the treasury.
+/// Nonces are per-treasury and must strictly increase (so the first must be > 0).
+fun consume_nonce(registry: &mut DecisionRegistry, treasury: ID, nonce: u64) {
+    if (registry.last_nonce.contains(treasury)) {
+        let last = registry.last_nonce.borrow_mut(treasury);
+        assert!(nonce > *last, EReplayedOrStaleNonce);
+        *last = nonce;
+    } else {
+        assert!(nonce > 0, EReplayedOrStaleNonce);
+        registry.last_nonce.add(treasury, nonce);
+    }
 }
 
 // === Tests ===
@@ -67,7 +95,12 @@ public fun execute_decision<C>(
 #[test_only]
 use std::bcs;
 #[test_only]
-use std::unit_test::assert_eq;
+use std::unit_test::{assert_eq, destroy};
+
+#[test_only]
+fun new_registry(ctx: &mut TxContext): DecisionRegistry {
+    DecisionRegistry { id: object::new(ctx), last_nonce: table::new(ctx) }
+}
 
 /// Pins the wire format the enclave must reproduce: a DecisionPayload is
 /// id(32) + amount(8, LE) + nonce(8, LE) = 48 bytes, fields in this order.
@@ -105,4 +138,35 @@ fun verify_real_enclave_signature() {
     assert!(!e.verify_signature(DECISION_INTENT, 1_700_000_000_000, tampered, &sig));
 
     e.destroy();
+}
+
+#[test]
+fun nonce_strictly_increases() {
+    let mut ctx = tx_context::dummy();
+    let mut reg = new_registry(&mut ctx);
+    let t = object::id_from_address(@0x2);
+    consume_nonce(&mut reg, t, 1);
+    consume_nonce(&mut reg, t, 2);
+    consume_nonce(&mut reg, t, 99);
+    destroy(reg);
+}
+
+#[test, expected_failure(abort_code = EReplayedOrStaleNonce)]
+fun replayed_nonce_aborts() {
+    let mut ctx = tx_context::dummy();
+    let mut reg = new_registry(&mut ctx);
+    let t = object::id_from_address(@0x2);
+    consume_nonce(&mut reg, t, 7);
+    consume_nonce(&mut reg, t, 7); // replay of the same nonce — aborts
+    abort
+}
+
+#[test, expected_failure(abort_code = EReplayedOrStaleNonce)]
+fun stale_nonce_aborts() {
+    let mut ctx = tx_context::dummy();
+    let mut reg = new_registry(&mut ctx);
+    let t = object::id_from_address(@0x2);
+    consume_nonce(&mut reg, t, 10);
+    consume_nonce(&mut reg, t, 9); // lower than last — aborts
+    abort
 }
