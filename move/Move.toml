@@ -1,0 +1,8 @@
+[package]
+name = "treasury_agent"
+edition = "2024"
+
+# Framework deps (Sui, MoveStdlib) are implicit on Sui 1.45+ — do not list them.
+# Named addresses derive from the package name on Sui CLI 1.63+ — no [addresses] section.
+
+[dependencies]

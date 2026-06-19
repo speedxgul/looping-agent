@@ -3,8 +3,9 @@ dist/
 .env
 .DS_Store
 logs/
-data/*.json
-!data/.gitkeep
+agent/data/*.json
+!agent/data/.gitkeep
+move/build/
 keeping-progress-track.txt
 derive-key.ts
 .cursor

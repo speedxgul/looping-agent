@@ -1,37 +1,16 @@
 {
-  "name": "defi-agent-v0",
-  "version": "0.1.0",
+  "name": "treasury-agent",
   "private": true,
-  "type": "module",
-  "description": "Autonomous Sui DeFi treasury agent using Suilend, NAVI, and Scallop lending.",
-  "packageManager": "bun@1.3.1",
+  "description": "Monorepo root — delegates to agent/ (TS) and move/ (Sui Move). No workspace yet; add when web/ lands.",
   "scripts": {
-    "start": "bun src/index.ts",
-    "run:once": "bun src/index.ts run-once",
-    "run:daemon": "bun src/index.ts run-daemon",
-    "account:address": "bun src/index.ts account:address",
-    "doctor": "bun src/index.ts doctor",
-    "rates": "bun scripts/check-suilend-rates.ts",
-    "memwal:keygen": "bun scripts/memwal-keygen.ts",
-    "test": "bun test",
-    "typecheck": "tsc --noEmit",
-    "check": "biome check src test scripts",
-    "check:fix": "biome check --write src test scripts",
-    "postinstall": "node scripts/patch-mysten-sui-client.mjs"
-  },
-  "engines": {
-    "bun": ">=1.3.1"
-  },
-  "dependencies": {
-    "@mysten-incubation/memwal": "^0.0.7",
-    "@mysten/seal": "^1.1.3",
-    "@mysten/sui": "^2.16.2",
-    "@naviprotocol/lending": "^1.4.6",
-    "@scallop-io/sui-scallop-sdk": "^2.4.5",
-    "@suilend/sdk": "^3.0.4"
-  },
-  "devDependencies": {
-    "@biomejs/biome": "^2.5.0",
-    "bun-types": "^1.3.14"
+    "setup": "cd agent && bun install",
+    "dev": "cd agent && bun run run:once",
+    "doctor": "cd agent && bun run doctor",
+    "test": "cd agent && bun test",
+    "typecheck": "cd agent && bun run typecheck",
+    "check": "cd agent && bun run check",
+    "check:fix": "cd agent && bun run check:fix",
+    "move:build": "cd move && sui move build",
+    "move:test": "cd move && sui move test"
   }
 }
