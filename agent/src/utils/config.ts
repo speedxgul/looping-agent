@@ -60,7 +60,7 @@ export function loadConfig(): AppConfig {
       allowedProtocols: readLendingProtocols('SUI_ALLOWED_PROTOCOLS', ['suilend', 'navi', 'scallop']),
       rebalanceMinAprDeltaBps: readNumber('SUI_REBALANCE_MIN_APR_DELTA_BPS', 50),
       rebalancing: {
-        enabled: readBoolean('ENABLE_REBALANCING', false),
+        enabled: readBoolean('ENABLE_REBALANCING', true),
         planOnly: readBoolean('REBALANCE_PLAN_ONLY', true),
         horizonDays: readNumber('REBALANCE_HORIZON_DAYS', 7),
         estimatedCostUsd: readNumber('REBALANCE_ESTIMATED_COST_USD', 0.02)

@@ -46,7 +46,7 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       allowedProtocols: ['suilend', 'navi', 'scallop'],
       rebalanceMinAprDeltaBps: 50,
       rebalancing: {
-        enabled: false,
+        enabled: true,
         planOnly: true,
         horizonDays: 7,
         estimatedCostUsd: 0.02
