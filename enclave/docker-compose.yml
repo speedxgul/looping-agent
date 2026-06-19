@@ -1,15 +1,14 @@
-# Phase A — zero-code proof: deploy Marlin's prebuilt echo server, attest, verify.
-# Swap to the custom image (commented below) for Phase B once you've pushed it.
+# Deploys the treasury enclave SIGNING service (enclave/app) on Oyster.
+# Build + push the image first (see README "Deploy the signing service"), then
+# replace <your-dockerhub-user> below. The signing service listens on :8080;
+# Oyster's blue enclave image serves the attestation on :1300 automatically.
 services:
   app:
-    image: marlinorg/oyster-cvm-tutorials-echo-server:latest
+    image: docker.io/<your-dockerhub-user>/treasury-enclave:latest
     init: true
     network_mode: host
     restart: unless-stopped
-
-  # --- Phase B: your own image (push to a PUBLIC registry first) ---
-  # app:
-  #   image: docker.io/<your-dockerhub-user>/treasury-enclave:latest
-  #   init: true
-  #   network_mode: host
-  #   restart: unless-stopped
+    # In a real run, provision the secp256k1 key via Seal instead of a plaintext env.
+    # For a first end-to-end test you can pin the dev key:
+    # environment:
+    #   - ENCLAVE_PRIVATE_KEY=1111111111111111111111111111111111111111111111111111111111111111
