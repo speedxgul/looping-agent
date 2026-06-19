@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { createEmptyAgentState } from '../src/core/agentMemory.js';
-import { evaluateActionPolicy, shouldRebalance } from '../src/core/policy.js';
+import type { ReserveCurve } from '../src/core/allocation.js';
+import { evaluateActionPolicy, evaluateRebalanceBreakeven, shouldRebalance } from '../src/core/policy.js';
 import { createToolRegistry } from '../src/core/toolRegistry.js';
-import type { AppConfig, Clients, Logger, NormalizedPositions } from '../src/types.js';
+import type { AppConfig, Clients, LendingProtocol, Logger, NormalizedPositions } from '../src/types.js';
 import { baseConfig } from './fixtures/baseConfig.js';
 
 const usdcCoinType = '0x5d4b302506645c37ff133b98c4b50a5ae14841659738d6d733d59d0d217a93bf::coin::COIN';
@@ -90,6 +91,28 @@ describe('shouldRebalance hysteresis', () => {
   });
 });
 
+describe('evaluateRebalanceBreakeven', () => {
+  test('blocks moves whose expected gain does not clear cost', () => {
+    const config = baseConfig();
+    const result = evaluateRebalanceBreakeven(
+      { currentNetApr: 5, targetNetApr: 6, amountUsd: 10, horizonDays: 7, costUsd: 0.02 },
+      config
+    );
+    expect(result.act).toBe(false);
+    expect(result.reason).toContain('does not exceed cost');
+  });
+
+  test('allows moves that clear bps threshold and cost', () => {
+    const config = baseConfig();
+    const result = evaluateRebalanceBreakeven(
+      { currentNetApr: 5, targetNetApr: 8, amountUsd: 1000, horizonDays: 30, costUsd: 0.02 },
+      config
+    );
+    expect(result.act).toBe(true);
+    expect(result.deltaBps).toBe(300);
+  });
+});
+
 describe('lending_supply routing', () => {
   test('routes to the requested protocol client', async () => {
     const supplyCalls: string[] = [];
@@ -124,6 +147,171 @@ describe('lending_supply routing', () => {
 
     expect(result.ok).toBe(true);
     expect(supplyCalls).toEqual(['scallop']);
+  });
+});
+
+describe('get_rebalance_plan', () => {
+  test('returns disabled when rebalancing is not enabled', async () => {
+    const config = liveConfig();
+    const registry = createToolRegistry({
+      config,
+      clients: rebalanceClients({}),
+      logger: quietLogger(),
+      memory: testMemory(config)
+    });
+
+    const result = await registry.execute({
+      type: 'function_call',
+      name: 'get_rebalance_plan',
+      call_id: 'c1',
+      arguments: '{}'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.enabled).toBe(false);
+    expect(result.moves).toEqual([]);
+  });
+
+  test('rejects a move when the APR delta is below the threshold', async () => {
+    const config = rebalanceConfig({ rebalanceMinAprDeltaBps: 200 });
+    const registry = createToolRegistry({
+      config,
+      clients: rebalanceClients({
+        suilendDepositRaw: usdc(1000),
+        naviRewardApr: 1
+      }),
+      logger: quietLogger(),
+      memory: testMemory(config)
+    });
+
+    const result = await registry.execute({
+      type: 'function_call',
+      name: 'get_rebalance_plan',
+      call_id: 'c1',
+      arguments: '{}'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.moves).toEqual([]);
+    expect(Array.isArray(result.rejected)).toBe(true);
+  });
+
+  test('rejects a move when expected gain does not clear cost', async () => {
+    const config = rebalanceConfig({
+      rebalancing: { enabled: true, planOnly: true, horizonDays: 7, estimatedCostUsd: 10 }
+    });
+    const registry = createToolRegistry({
+      config,
+      clients: rebalanceClients({
+        suilendDepositRaw: usdc(1000),
+        naviRewardApr: 3
+      }),
+      logger: quietLogger(),
+      memory: testMemory(config)
+    });
+
+    const result = await registry.execute({
+      type: 'function_call',
+      name: 'get_rebalance_plan',
+      call_id: 'c1',
+      arguments: '{}'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.moves).toEqual([]);
+    expect(JSON.stringify(result.rejected)).toContain('does not exceed cost');
+  });
+
+  test('proposes a plan-only withdraw and supply when gates clear', async () => {
+    const config = rebalanceConfig({
+      maxSupplyRaw: BigInt(usdc(1000)),
+      rebalancing: { enabled: true, planOnly: true, horizonDays: 30, estimatedCostUsd: 0.01 }
+    });
+    const registry = createToolRegistry({
+      config,
+      clients: rebalanceClients({
+        suilendDepositRaw: usdc(1000),
+        naviRewardApr: 5
+      }),
+      logger: quietLogger(),
+      memory: testMemory(config)
+    });
+
+    const result = await registry.execute({
+      type: 'function_call',
+      name: 'get_rebalance_plan',
+      call_id: 'c1',
+      arguments: '{}'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.enabled).toBe(true);
+    expect(result.executionAllowed).toBe(false);
+    const moves = result.moves as Array<Record<string, unknown>>;
+    expect(moves.length).toBeGreaterThan(0);
+    expect(moves[0]?.fromProtocol).toBe('suilend');
+    expect(moves[0]?.toProtocol).toBe('navi');
+    expect(moves[0]?.planOnly).toBe(true);
+  });
+
+  test('rejects dust moves below the configured minimum', async () => {
+    const config = rebalanceConfig({
+      minIdleRaw: BigInt(usdc(2000)),
+      maxSupplyRaw: BigInt(usdc(1000)),
+      rebalancing: { enabled: true, planOnly: true, horizonDays: 30, estimatedCostUsd: 0.01 }
+    });
+    const registry = createToolRegistry({
+      config,
+      clients: rebalanceClients({
+        suilendDepositRaw: usdc(1000),
+        naviRewardApr: 5
+      }),
+      logger: quietLogger(),
+      memory: testMemory(config)
+    });
+
+    const result = await registry.execute({
+      type: 'function_call',
+      name: 'get_rebalance_plan',
+      call_id: 'c1',
+      arguments: '{}'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.moves).toEqual([]);
+    expect(JSON.stringify(result.rejected)).toContain('dust threshold');
+  });
+
+  test('does not propose moves into disabled or non-allowlisted protocols', async () => {
+    const config = rebalanceConfig({
+      allowedProtocols: ['suilend'],
+      protocols: {
+        suilend: { enabled: true, write: true },
+        navi: { enabled: true, write: true },
+        scallop: { enabled: true, write: true }
+      },
+      rebalancing: { enabled: true, planOnly: true, horizonDays: 30, estimatedCostUsd: 0.01 }
+    });
+    const registry = createToolRegistry({
+      config,
+      clients: rebalanceClients({
+        suilendDepositRaw: usdc(1000),
+        naviRewardApr: 5
+      }),
+      logger: quietLogger(),
+      memory: testMemory(config)
+    });
+
+    const result = await registry.execute({
+      type: 'function_call',
+      name: 'get_rebalance_plan',
+      call_id: 'c1',
+      arguments: '{}'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.moves).toEqual([]);
+    expect(JSON.stringify(result.skipped)).toContain('navi');
   });
 });
 
@@ -172,6 +360,138 @@ function routingClients(onSupply: (protocol: string) => void): Clients {
     openai: { create: async () => ({ output: [] }) },
     walrusMemory: { enabled: false, recall: async () => [], remember: async () => null }
   } as unknown as Clients;
+}
+
+function rebalanceConfig(overrides: Partial<AppConfig['sui']> = {}): AppConfig {
+  return liveConfig({
+    protocols: {
+      suilend: { enabled: true, write: true },
+      navi: { enabled: true, write: true },
+      scallop: { enabled: true, write: false }
+    },
+    minIdleRaw: 0n,
+    maxSupplyRaw: BigInt(usdc(10_000)),
+    rebalancing: { enabled: true, planOnly: true, horizonDays: 7, estimatedCostUsd: 0.02 },
+    ...overrides
+  });
+}
+
+function rebalanceClients({
+  suilendDepositRaw = '0',
+  naviDepositRaw = '0',
+  naviRewardApr = 0
+}: {
+  suilendDepositRaw?: string;
+  naviDepositRaw?: string;
+  naviRewardApr?: number;
+}): Clients {
+  const deposits: Record<LendingProtocol, string> = {
+    suilend: suilendDepositRaw,
+    navi: naviDepositRaw,
+    scallop: '0'
+  };
+
+  const protocolClient = (protocol: LendingProtocol, rewardSupplyApr = 0) => ({
+    name: protocol,
+    enabled: true,
+    requiresObligationForWrite: false,
+    resolveCoinType: (asset: string) => (asset === 'usdc' ? usdcCoinType : asset),
+    isAssetAllowed: () => true,
+    getMarkets: async () => ({ markets: [market(protocol, rewardSupplyApr)] }),
+    getPositions: async () => positions(protocol, deposits[protocol]),
+    executeSupply: async () => ({ digest: '0x', success: true }),
+    executeWithdraw: async () => ({ digest: '0x', success: true }),
+    executeBorrow: async () => ({ digest: '0x', success: true }),
+    executeRepay: async () => ({ digest: '0x', success: true }),
+    simulateHealthFactorAfterBorrow: async () => Number.POSITIVE_INFINITY
+  });
+
+  return {
+    suiExecution: {
+      assertWalletMatches: async () => ({ address: '0x1' }),
+      getCoinBalances: async () => ({
+        wallet: '0x1',
+        sui: { symbol: 'SUI', coinType: '0x2::sui::SUI', decimals: 9, raw: '0', formatted: '0' },
+        usdc: { symbol: 'USDC', coinType: usdcCoinType, decimals: 6, raw: '0', formatted: '0' }
+      })
+    },
+    suilend: protocolClient('suilend'),
+    navi: protocolClient('navi', naviRewardApr),
+    scallop: protocolClient('scallop'),
+    openai: { create: async () => ({ output: [] }) },
+    walrusMemory: { enabled: false, recall: async () => [], remember: async () => null }
+  } as unknown as Clients;
+}
+
+function market(protocol: LendingProtocol, rewardSupplyApr: number) {
+  const curve = reserveCurve(protocol, rewardSupplyApr);
+  return {
+    coinType: usdcCoinType,
+    symbol: 'USDC',
+    decimals: 6,
+    supplyApr: 5,
+    borrowApr: 8,
+    totalApr: 5 + rewardSupplyApr,
+    price: 1,
+    allowed: true,
+    curve
+  };
+}
+
+function reserveCurve(protocol: LendingProtocol, rewardSupplyApr: number): ReserveCurve {
+  return {
+    protocol,
+    asset: 'usdc',
+    coinType: usdcCoinType,
+    borrowAprPoints: [
+      { util: 0, apr: 0 },
+      { util: 0.8, apr: 8 },
+      { util: 1, apr: 60 }
+    ],
+    reserveFactorPct: 20,
+    borrowedRaw: usdc(800_000),
+    availableLiquidityRaw: usdc(200_000),
+    decimals: 6,
+    price: 1,
+    rewardSupplyApr
+  };
+}
+
+function positions(protocol: LendingProtocol, depositRaw: string): NormalizedPositions {
+  return {
+    protocol,
+    healthFactor: Number.POSITIVE_INFINITY,
+    borrowLimitUsd: 0,
+    weightedBorrowsUsd: 0,
+    depositedAmountUsd: Number(BigInt(depositRaw)) / 1e6,
+    borrowedAmountUsd: 0,
+    deposits:
+      BigInt(depositRaw) > 0n
+        ? [
+            {
+              coinType: usdcCoinType,
+              symbol: 'USDC',
+              amount: depositRaw,
+              amountUsd: Number(BigInt(depositRaw)) / 1e6,
+              side: 'deposit'
+            }
+          ]
+        : [],
+    borrows: []
+  };
+}
+
+function testMemory(config: AppConfig) {
+  return {
+    state: createEmptyAgentState(config),
+    runId: 'run-1',
+    statePath: 'data/agent-state.json',
+    persist: async () => undefined
+  };
+}
+
+function usdc(amount: number): string {
+  return BigInt(Math.round(amount * 1_000_000)).toString();
 }
 
 function quietLogger(): Logger {

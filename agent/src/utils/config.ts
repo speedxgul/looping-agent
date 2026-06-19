@@ -59,6 +59,12 @@ export function loadConfig(): AppConfig {
       explorerBaseUrl: readString('SUI_EXPLORER_TX_BASE', defaultExplorerBaseUrl(network)),
       allowedProtocols: readLendingProtocols('SUI_ALLOWED_PROTOCOLS', ['suilend', 'navi', 'scallop']),
       rebalanceMinAprDeltaBps: readNumber('SUI_REBALANCE_MIN_APR_DELTA_BPS', 50),
+      rebalancing: {
+        enabled: readBoolean('ENABLE_REBALANCING', false),
+        planOnly: readBoolean('REBALANCE_PLAN_ONLY', true),
+        horizonDays: readNumber('REBALANCE_HORIZON_DAYS', 7),
+        estimatedCostUsd: readNumber('REBALANCE_ESTIMATED_COST_USD', 0.02)
+      },
       defaultAssets: {
         usdc: readString('SUI_DEFAULT_USDC_ASSET', 'usdc'),
         sui: readString('SUI_DEFAULT_SUI_ASSET', 'sui')

@@ -30,7 +30,7 @@ import {
 } from './agentMemory.js';
 import { netSupplyApr, type ReserveCurve, solveAllocation } from './allocation.js';
 import type { SaveOptions } from './memoryStore.js';
-import { evaluateActionPolicy } from './policy.js';
+import { evaluateActionPolicy, evaluateRebalanceBreakeven } from './policy.js';
 
 const PROTOCOLS: LendingProtocol[] = ['suilend', 'navi', 'scallop'];
 
@@ -270,6 +270,8 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
 
     get_optimal_allocation: async () => getOptimalAllocation(config, clients, memory),
 
+    get_rebalance_plan: async () => getRebalancePlan(config, clients),
+
     get_lending_positions: async (args) => {
       if (!config.sui.enabled) {
         return { ok: false, error: 'Sui lending is disabled' };
@@ -335,6 +337,7 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
           allowedPools: config.sui.allowedPools,
           defaultAssets: config.sui.defaultAssets,
           explorerBaseUrl: config.sui.explorerBaseUrl,
+          rebalancing: config.sui.rebalancing,
           protocols: config.sui.protocols,
           agentStatePath: memory.statePath
         },
@@ -717,6 +720,240 @@ function round4(value: number): number {
   return Math.round(value * 1e4) / 1e4;
 }
 
+interface RebalanceSide {
+  protocol: LendingProtocol;
+  asset: string;
+  coinType: string;
+  currentRaw: bigint;
+  targetRaw: bigint;
+  deltaRaw: bigint;
+  netApr: number;
+  price: number;
+  decimals: number;
+}
+
+async function getRebalancePlan(config: AppConfig, clients: Clients): Promise<Record<string, unknown>> {
+  if (!config.sui.enabled) {
+    return { ok: false, error: 'Sui lending is disabled' };
+  }
+  if (!config.agent.walletAddress) {
+    return { ok: false, error: 'AGENT_WALLET_ADDRESS is not configured' };
+  }
+  if (!config.sui.rebalancing.enabled) {
+    return {
+      ok: true,
+      enabled: false,
+      planOnly: config.sui.rebalancing.planOnly,
+      reason: 'ENABLE_REBALANCING is false',
+      moves: []
+    };
+  }
+
+  const usdcAsset = config.sui.defaultAssets.usdc;
+  const curves: ReserveCurve[] = [];
+  const currentByProtocol = new Map<LendingProtocol, bigint>();
+  const skipped: Array<{ protocol: LendingProtocol; reason: string }> = [];
+
+  for (const protocol of PROTOCOLS) {
+    if (!config.sui.protocols[protocol]?.write || !config.sui.allowedProtocols.includes(protocol)) {
+      skipped.push({ protocol, reason: 'not write-enabled or not allowlisted' });
+      continue;
+    }
+
+    const client = protocolClient(clients, protocol);
+    const coinType = client.resolveCoinType(usdcAsset);
+    try {
+      const [markets, positions] = await Promise.all([
+        client.getMarkets(),
+        client.getPositions(config.agent.walletAddress)
+      ]);
+      const market = markets.markets.find((m) => sameCoinType(m.coinType, coinType));
+      if (!market?.curve) {
+        skipped.push({ protocol, reason: 'no USDC reserve curve available' });
+        continue;
+      }
+      curves.push(market.curve);
+
+      const suppliedRaw = positions.deposits
+        .filter((deposit) => sameCoinType(deposit.coinType, coinType))
+        .reduce((sum, deposit) => sum + safeBigInt(deposit.amount), 0n);
+      currentByProtocol.set(protocol, suppliedRaw);
+    } catch (error: unknown) {
+      skipped.push({
+        protocol,
+        reason: `read failed: ${error instanceof Error ? error.message : String(error)}`
+      });
+    }
+  }
+
+  if (curves.length === 0) {
+    return {
+      ok: true,
+      enabled: true,
+      planOnly: config.sui.rebalancing.planOnly,
+      moves: [],
+      reason: 'No eligible USDC curves to rebalance across',
+      skipped
+    };
+  }
+
+  const balances = await clients.suiExecution.getCoinBalances(config.agent.walletAddress);
+  const idleSupplyableRaw = buildSupplyHints(config, BigInt(balances.usdc.raw), {
+    // Rebalance planning is read-only; ignore memory cooldown so the plan reflects
+    // economic target state, not whether a write is currently blocked.
+    version: 1,
+    agentName: config.agent.name,
+    walletAddress: config.agent.walletAddress.toLowerCase(),
+    updatedAt: new Date().toISOString(),
+    runs: [],
+    actions: { positionActions: [], tweets: [] },
+    snapshots: {},
+    pending: [],
+    artifacts: []
+  }).supplyableRaw;
+
+  const currentTotalRaw = [...currentByProtocol.values()].reduce((sum, raw) => sum + raw, 0n);
+  const targetBudgetRaw = currentTotalRaw + BigInt(idleSupplyableRaw);
+  if (targetBudgetRaw <= 0n) {
+    return {
+      ok: true,
+      enabled: true,
+      planOnly: config.sui.rebalancing.planOnly,
+      currentTotalRaw: '0',
+      targetBudgetRaw: '0',
+      moves: [],
+      reason: 'No supplied or deployable idle USDC to rebalance',
+      skipped: skipped.length > 0 ? skipped : undefined
+    };
+  }
+
+  const target = solveAllocation({ curves, budgetRaw: targetBudgetRaw });
+  const targetByProtocol = new Map<LendingProtocol, bigint>(
+    target.allocations.map((leg) => [leg.protocol, BigInt(leg.xRaw)])
+  );
+  const sides = curves.map((curve) => {
+    const currentRaw = currentByProtocol.get(curve.protocol) ?? 0n;
+    const targetRaw = targetByProtocol.get(curve.protocol) ?? 0n;
+    return {
+      protocol: curve.protocol,
+      asset: curve.asset,
+      coinType: curve.coinType,
+      currentRaw,
+      targetRaw,
+      deltaRaw: targetRaw - currentRaw,
+      netApr: netSupplyApr(curve, 0n),
+      price: curve.price,
+      decimals: curve.decimals
+    };
+  });
+
+  const withdrawals: RebalanceSide[] = sides
+    .filter((side) => side.deltaRaw < 0n)
+    .map((side) => ({ ...side, deltaRaw: -side.deltaRaw }))
+    .sort((a, b) => a.netApr - b.netApr);
+  const supplies: RebalanceSide[] = sides
+    .filter((side) => side.deltaRaw > 0n)
+    .sort((a, b) => b.netApr - a.netApr);
+
+  const moves: Record<string, unknown>[] = [];
+  const rejected: Record<string, unknown>[] = [];
+  const minMoveRaw = config.sui.minIdleRaw > 0n ? config.sui.minIdleRaw : 0n;
+
+  for (const withdraw of withdrawals) {
+    let remainingWithdraw = withdraw.deltaRaw;
+    for (const supply of supplies) {
+      if (remainingWithdraw <= 0n || supply.deltaRaw <= 0n) {
+        continue;
+      }
+      let rawAmount = minBigInt(remainingWithdraw, supply.deltaRaw);
+      if (config.sui.maxSupplyRaw > 0n) {
+        rawAmount = minBigInt(rawAmount, config.sui.maxSupplyRaw);
+      }
+      if (rawAmount <= 0n) {
+        continue;
+      }
+
+      const amountUsd = rawToUsd(rawAmount, withdraw.decimals, withdraw.price);
+      const decision = evaluateRebalanceBreakeven(
+        {
+          currentNetApr: withdraw.netApr,
+          targetNetApr: supply.netApr,
+          amountUsd,
+          horizonDays: config.sui.rebalancing.horizonDays,
+          costUsd: config.sui.rebalancing.estimatedCostUsd
+        },
+        config
+      );
+
+      const candidate = {
+        fromProtocol: withdraw.protocol,
+        toProtocol: supply.protocol,
+        asset: usdcAsset,
+        coinType: withdraw.coinType,
+        rawAmount: rawAmount.toString(),
+        amountFormatted: formatUnits(rawAmount.toString(), withdraw.decimals),
+        amountUsd,
+        currentNetApr: round4(withdraw.netApr),
+        targetNetApr: round4(supply.netApr),
+        deltaBps: decision.deltaBps,
+        expectedGainUsd: decision.expectedGainUsd,
+        costUsd: decision.costUsd,
+        reason: decision.reason
+      };
+
+      if (rawAmount < minMoveRaw) {
+        rejected.push({ ...candidate, reason: 'Move is below MIN_IDLE_USDC_RAW dust threshold' });
+      } else if (!decision.act) {
+        rejected.push(candidate);
+      } else {
+        moves.push({
+          ...candidate,
+          planOnly: config.sui.rebalancing.planOnly,
+          withdraw: {
+            protocol: withdraw.protocol,
+            asset: usdcAsset,
+            coinType: withdraw.coinType,
+            rawAmount: rawAmount.toString()
+          },
+          supply: {
+            protocol: supply.protocol,
+            asset: usdcAsset,
+            coinType: supply.coinType,
+            rawAmount: rawAmount.toString()
+          }
+        });
+        remainingWithdraw -= rawAmount;
+        supply.deltaRaw -= rawAmount;
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    enabled: true,
+    planOnly: config.sui.rebalancing.planOnly,
+    executionAllowed: false,
+    asset: usdcAsset,
+    currentTotalRaw: currentTotalRaw.toString(),
+    idleSupplyableRaw,
+    targetBudgetRaw: targetBudgetRaw.toString(),
+    targetAllocation: target.allocations,
+    currentAllocation: sides.map((side) => ({
+      protocol: side.protocol,
+      rawAmount: side.currentRaw.toString(),
+      amountFormatted: formatUnits(side.currentRaw.toString(), side.decimals),
+      netApr: round4(side.netApr)
+    })),
+    moves,
+    rejected: rejected.length > 0 ? rejected : undefined,
+    skipped: skipped.length > 0 ? skipped : undefined,
+    reason:
+      moves.length > 0
+        ? 'Plan-only rebalance candidates clear APR and breakeven gates; no transactions were executed.'
+        : 'No rebalance move clears APR, cost, and dust gates.'
+  };
+}
+
 async function handlePostActionUpdate(
   args: ToolArgs,
   config: AppConfig,
@@ -892,6 +1129,22 @@ function inferAssetDecimals(asset: string, config: AppConfig): number {
 
 function formatApr(value: number): string {
   return value.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function safeBigInt(value: string): bigint {
+  try {
+    return BigInt(value);
+  } catch {
+    return 0n;
+  }
+}
+
+function minBigInt(a: bigint, b: bigint): bigint {
+  return a < b ? a : b;
+}
+
+function rawToUsd(rawAmount: bigint, decimals: number, price: number): number {
+  return (Number(rawAmount) / 10 ** decimals) * price;
 }
 
 function defaultComparisonAssets(config: AppConfig): string[] {
@@ -1071,6 +1324,13 @@ function definitions(): OpenAIToolDefinition[] {
       name: 'get_optimal_allocation',
       description:
         "Compute the optimal split of idle USDC across write-enabled protocols using each pool's full reserve rate curve (own-impact aware, water-filling). Returns an allocation vector (protocol + rawAmount per leg), blended and marginal net APR, and the improvement vs the naive highest-APR heuristic. PREFERRED over get_best_supply_target: supply each returned leg via lending_supply.",
+      parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
+    },
+    {
+      type: 'function',
+      name: 'get_rebalance_plan',
+      description:
+        'Plan-only USDC rebalance analysis across write-enabled Suilend, NAVI, and Scallop positions. Returns proposed withdraw+supply moves only when APR hysteresis and cost breakeven gates clear; it never executes transactions.',
       parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
     },
     {

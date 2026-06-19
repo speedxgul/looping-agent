@@ -8,6 +8,7 @@ An extensible v1 scaffold for an autonomous DeFi treasury agent on **Sui**. Open
 - can carry **long-term semantic memory** across sessions and machines via **MemWal (Walrus Memory)**
 - reads Sui wallet USDC/SUI balances and live protocol APRs to pick allowlisted assets
 - routes idle USDC with an own-impact-aware allocation solver that uses reserve curves and water-filling
+- can produce plan-only USDC rebalance proposals when existing supplied funds should move between protocols
 - can supply, withdraw, borrow, and repay on Suilend, NAVI, and Scallop when signer config, protocol write flags, and policy gates allow it
 - auto-repays the largest borrow when health factor drops below `SUI_MIN_HEALTH_FACTOR` (before the LLM loop)
 - can post confirmed supply updates to X when X posting is explicitly enabled
@@ -64,9 +65,10 @@ run from `agent/`, or from the repo root via the passthrough scripts (`bun run t
 3. Calls OpenAI with tools and the configured mission. `recall_memory` and `remember_insight` let the model read/write durable cross-session memory on demand.
 4. Typical treasury cycle (when live): policy → memory → rate comparison → protocol positions → wallet balances → optimal allocation → optional supply/withdraw/borrow/repay on write-enabled lending protocols.
 5. Idle USDC routing uses `get_optimal_allocation`, which compares write-enabled Suilend, NAVI, and Scallop USDC reserve curves and returns per-protocol supply legs for the model to execute with `lending_supply`.
-6. Confirmed supply actions are recorded in memory; a `tweet_action` pending task is queued only when X posting is enabled and token-configured.
-7. Local policy and memory idempotency block duplicate writes by cooldown. Pending legacy tweet tasks are ignored for treasury execution when X posting is disabled or unconfigured.
-8. The model returns a final run summary; memory is saved for the next tick. On the Walrus backend, a Markdown run report is archived as a Walrus blob and a reflection is stored in MemWal.
+6. When enabled, `get_rebalance_plan` compares current USDC deposits against the optimal target allocation and reports plan-only withdraw/supply moves that clear APR and cost gates.
+7. Confirmed supply actions are recorded in memory; a `tweet_action` pending task is queued only when X posting is enabled and token-configured.
+8. Local policy and memory idempotency block duplicate writes by cooldown. Pending legacy tweet tasks are ignored for treasury execution when X posting is disabled or unconfigured.
+9. The model returns a final run summary; memory is saved for the next tick. On the Walrus backend, a Markdown run report is archived as a Walrus blob and a reflection is stored in MemWal.
 
 For deployable autonomous operation:
 
@@ -105,6 +107,18 @@ SUI_MAX_SUPPLY_AMOUNT_RAW=10000000
 ```
 
 Keep the allowed asset and protocol lists tight. This project is designed to approve and act only on explicitly allowlisted lending markets.
+
+Optional plan-only rebalancing:
+
+```bash
+ENABLE_REBALANCING=true
+REBALANCE_PLAN_ONLY=true
+REBALANCE_HORIZON_DAYS=7
+REBALANCE_ESTIMATED_COST_USD=0.02
+SUI_REBALANCE_MIN_APR_DELTA_BPS=50
+```
+
+`get_rebalance_plan` is read-only in this version. It can recommend moving supplied USDC from one protocol to another, but it does not execute `withdraw` or `supply` transactions.
 
 Derive your Sui address from the configured key:
 
