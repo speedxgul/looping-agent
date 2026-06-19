@@ -152,7 +152,9 @@ describe('lending_supply routing', () => {
 
 describe('get_rebalance_plan', () => {
   test('returns disabled when rebalancing is not enabled', async () => {
-    const config = liveConfig();
+    const config = liveConfig({
+      rebalancing: { enabled: false, planOnly: true, horizonDays: 7, estimatedCostUsd: 0.02 }
+    });
     const registry = createToolRegistry({
       config,
       clients: rebalanceClients({}),

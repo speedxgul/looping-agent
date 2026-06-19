@@ -742,7 +742,7 @@ async function getRebalancePlan(config: AppConfig, clients: Clients): Promise<Re
   if (!config.sui.rebalancing.enabled) {
     return {
       ok: true,
-      enabled: true,
+      enabled: false,
       planOnly: config.sui.rebalancing.planOnly,
       reason: 'ENABLE_REBALANCING is false',
       moves: []
