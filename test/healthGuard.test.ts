@@ -69,7 +69,9 @@ describe('runHealthGuard', () => {
   });
 
   test('executes repay in live mode when health factor is critical', async () => {
-    const state = createEmptyAgentState(baseConfig({ runtime: { dryRun: false, nodeEnv: 'test', autonomyIntervalMs: 1000 } }));
+    const state = createEmptyAgentState(
+      baseConfig({ runtime: { dryRun: false, nodeEnv: 'test', autonomyIntervalMs: 1000 } })
+    );
     let repayCalled = false;
     const clients = createClients({
       healthFactor: 1.1,
@@ -83,7 +85,7 @@ describe('runHealthGuard', () => {
       ],
       executeRepay: async () => {
         repayCalled = true;
-        return { digest: '0xrepay' };
+        return { digest: '0xrepay', success: true };
       }
     });
 
@@ -116,8 +118,6 @@ function createClients(
   } = {}
 ): Clients {
   return {
-    social: { globalFeed: async () => ({}) },
-    swap: { getQuote: async () => ({ validRoutes: [], bestRoute: null }) },
     suiExecution: {
       isConfigured: () => true,
       getAddress: () => '0x1',
@@ -152,7 +152,6 @@ function createClients(
     navi: { isEnabled: () => false, getRates: async () => ({ rates: [] }) },
     scallop: { isEnabled: () => false, getRates: async () => ({ rates: [] }) },
     openai: { create: async () => ({ output: [] }) },
-    x: { createPost: async (text: string) => ({ id: 'x-post-1', text }) },
     walrusBlob: {
       upload: async () => ({ blobId: 'blob-1', url: 'https://example.com/blob-1' }),
       download: async () => null

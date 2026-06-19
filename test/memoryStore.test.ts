@@ -2,11 +2,11 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { WalrusBlobClient } from '../src/clients/walrusBlobClient.js';
+import type { WalrusBlobClient } from '../src/clients/storage/walrusBlobClient.js';
 import { createEmptyAgentState } from '../src/core/agentMemory.js';
 import { FileMemoryStore, WalrusMemoryStore } from '../src/core/memoryStore.js';
-import { createLogger } from '../src/utils/logger.js';
 import type { AppConfig } from '../src/types.js';
+import { createLogger } from '../src/utils/logger.js';
 
 const logger = createLogger('error');
 
@@ -38,7 +38,8 @@ class FakeBlobClient {
 
   async storeString(value: string) {
     this.uploads += 1;
-    const blobId = `blob-${(this.seq += 1)}`;
+    this.seq += 1;
+    const blobId = `blob-${this.seq}`;
     this.store.set(blobId, value);
     return { blobId, url: `agg/${blobId}`, newlyCreated: true };
   }

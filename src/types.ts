@@ -1,13 +1,11 @@
-import type { MoltxSocialClient } from './clients/moltxSocialClient.js';
-import type { MoltxSwapClient } from './clients/moltxSwapClient.js';
-import type { NaviClient } from './clients/naviClient.js';
-import type { OpenAIResponsesClient } from './clients/openaiResponsesClient.js';
-import type { ScallopClient } from './clients/scallopClient.js';
-import type { SuiExecutionClient } from './clients/sui/suiExecutionClient.js';
-import type { SuilendClient } from './clients/suilendClient.js';
-import type { XClient } from './clients/xClient.js';
-import type { WalrusBlobClient } from './clients/walrusBlobClient.js';
-import type { WalrusMemoryClient } from './clients/walrusMemoryClient.js';
+import type { NaviClient } from './clients/chain/naviClient.js';
+import type { ScallopClient } from './clients/chain/scallopClient.js';
+import type { SuiExecutionClient } from './clients/chain/suiExecutionClient.js';
+import type { SuilendClient } from './clients/chain/suilendClient.js';
+import type { OpenAIResponsesClient } from './clients/http/openaiResponsesClient.js';
+import type { XClient } from './clients/http/xClient.js';
+import type { WalrusBlobClient } from './clients/storage/walrusBlobClient.js';
+import type { WalrusMemoryClient } from './clients/storage/walrusMemoryClient.js';
 import type { createLogger } from './utils/logger.js';
 
 export type MemoryBackend = 'file' | 'walrus';
@@ -37,24 +35,10 @@ export interface AppConfig {
     baseUrl: string;
     maxToolRounds: number;
   };
-  moltx: {
-    apiBase: string;
-  };
   x: {
     enablePosting: boolean;
     userAccessToken: string;
     apiBase: string;
-  };
-  swap: {
-    baseUrl: string;
-    enableQuotes: boolean;
-    enableAutonomousSwaps: boolean;
-    quoteNetwork: NetworkName;
-    quoteSellToken: string;
-    quoteBuyToken: string;
-    quoteSellAmount: string;
-    maxSlippagePercent: number;
-    maxPriceImpactPercent: number;
   };
   sui: {
     enabled: boolean;
@@ -100,8 +84,6 @@ export interface AppConfig {
 }
 
 export interface Clients {
-  social: MoltxSocialClient;
-  swap: MoltxSwapClient;
   suiExecution: SuiExecutionClient;
   suilend: SuilendClient;
   navi: NaviClient;
@@ -111,8 +93,6 @@ export interface Clients {
   walrusBlob: WalrusBlobClient;
   walrusMemory: WalrusMemoryClient;
 }
-
-export type NetworkName = 'ethereum' | 'arbitrum' | 'base' | 'polygon' | 'plasma';
 
 export interface SuiTokenBalance {
   symbol: string;
@@ -175,53 +155,6 @@ export interface LendingRatesComparisonResponse {
   rows: LendingRateRow[];
 }
 
-export interface TokenInfo {
-  address: string;
-  name?: string;
-  symbol: string;
-  decimals: number;
-  price?: number;
-  chainId?: string | number;
-  logoURI?: string;
-  coingeckoId?: string;
-}
-
-export interface SwapRoute {
-  name: string;
-  displayName: string;
-  iconURL?: string;
-  data?: {
-    sellToken?: TokenInfo;
-    buyToken?: TokenInfo;
-    sellTokenAmount?: string;
-    buyTokenAmount?: string;
-    unitAmt?: string;
-    slippage?: string;
-    priceImpact?: string;
-    calldata?: string;
-    to?: string;
-    allowanceSpender?: string;
-    gas?: number;
-    gasPrice?: string | number;
-    value?: string;
-    raw?: Record<string, unknown>;
-  };
-  error?: {
-    message: string;
-  };
-}
-
-export interface SwapResponse {
-  data?: {
-    totalAggregators?: number;
-    [key: string]: unknown;
-  };
-  aggregators?: SwapRoute[];
-  validRoutes: SwapRoute[];
-  bestRoute: SwapRoute | null;
-  [key: string]: unknown;
-}
-
 export interface OpenAIResponse {
   output?: OpenAIOutputItem[];
   output_text?: string;
@@ -266,7 +199,6 @@ export interface OpenAIInputItem {
 
 export type AgentAction =
   | { type: 'OBSERVE'; summary: string; details?: Record<string, unknown> }
-  | { type: 'SWAP_EXECUTE'; route?: SwapRoute | null; details?: Record<string, unknown> }
   | { type: 'SUILEND_SUPPLY'; details?: Record<string, unknown> }
   | { type: 'SUILEND_WITHDRAW'; details?: Record<string, unknown> }
   | { type: 'SUILEND_BORROW'; details?: Record<string, unknown> }

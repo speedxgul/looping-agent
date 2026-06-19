@@ -4,13 +4,12 @@ An extensible v1 scaffold for an autonomous DeFi treasury agent on **Sui**. Open
 
 - reads Suilend markets, obligations, and health factor via `@suilend/sdk`
 - compares supply/borrow APRs against NAVI and Scallop (read-only) when enabled
-- persists run history and position/tweet tasks in `data/agent-state.json`, or on **Walrus** as verifiable, portable blobs (see Walrus Memory & Verifiable Storage)
+- persists run history and position actions in `data/agent-state.json`, or on **Walrus** as verifiable, portable blobs (see Walrus Memory & Verifiable Storage)
 - can carry **long-term semantic memory** across sessions and machines via **MemWal (Walrus Memory)**
 - reads Sui wallet USDC/SUI balances and live Suilend APRs to pick allowlisted assets
 - can supply, withdraw, borrow, and repay on Suilend when signer config and policy flags are enabled
 - auto-repays the largest borrow when health factor drops below `SUI_MIN_HEALTH_FACTOR` (before the LLM loop)
 - can post confirmed supply updates to X when X posting is explicitly enabled
-- gets optional best-route swap quotes through `https://swap.moltx.io/swap` (EVM-only; disabled by default on Sui)
 - defaults to `DRY_RUN=true`, so it will not post or execute transactions unless explicitly enabled
 
 This version does not require writing Move contracts. It is an off-chain agent that talks to existing protocols and APIs.
@@ -35,11 +34,15 @@ Set `AGENT_WALLET_ADDRESS` (or `AGENT_SUI_ADDRESS`) to the address derived from 
 
 ```text
 src/
-  clients/        MoltX, Suilend, NAVI, Scallop, Sui execution, X, OpenAI, Walrus clients
+  clients/
+    chain/        Sui execution + lending protocol clients (Suilend, NAVI, Scallop)
+    http/         off-chain API clients (OpenAI)
+    storage/      Walrus blob + MemWal memory clients
   core/           autonomous agent loop, agent memory, memory store, policy, health guard, tools
   utils/          config, http, amounts, Sui private key, logging helpers
 scripts/
-  memwal-keygen.ts   generate a MemWal delegate key
+  memwal-keygen.ts        generate a MemWal delegate key
+  check-suilend-rates.ts  print live Suilend market rates
 data/
   agent-state.json   local persistent memory / Walrus cache (gitignored)
   walrus-pointer.json latest Walrus state blob id (gitignored)
@@ -47,7 +50,6 @@ docs/
   architecture.md  layers and runtime notes
   autonomy.md      planner loop, tools, and safety model
   deployment.md    daemon and deployment notes
-  moltx.md         endpoint notes from live skill files
 ```
 
 ## Current V1 Behavior
@@ -74,11 +76,8 @@ The daemon runs one loop every `AUTONOMY_INTERVAL_MS`. Use a process manager, Do
 
 - `DRY_RUN=true`
 - `SUI_NETWORK=testnet` (default)
-- `ENABLE_AUTONOMOUS_SWAPS=false`
-- `ENABLE_SWAP_QUOTES=false`
 - `ENABLE_SUI_POSITION_CREATION=false`
-- `SUI_ENABLE_BORROW=false`
-- slippage and price impact checks are enforced before any future swap execution path
+- `ENABLE_SUI_BORROW=false`
 
 To let the agent create Suilend positions, you also need:
 

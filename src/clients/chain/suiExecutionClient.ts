@@ -1,5 +1,5 @@
 import { SuiGrpcClient } from '@mysten/sui/grpc';
-import { Transaction } from '@mysten/sui/transactions';
+import type { Transaction } from '@mysten/sui/transactions';
 import type { ExecuteTransactionResult, Logger, SuiBalancesResponse, SuiNetwork } from '../../types.js';
 import { formatUnits } from '../../utils/amounts.js';
 import { createSuiKeypair, deriveSuiAddress } from '../../utils/privateKey.js';
@@ -23,7 +23,15 @@ export class SuiExecutionClient {
   private readonly suiCoinType: string;
   private readonly logger: Logger;
 
-  constructor({ rpcUrl, network, privateKey, walletAddress, usdcCoinType, suiCoinType, logger }: SuiExecutionClientOptions) {
+  constructor({
+    rpcUrl,
+    network,
+    privateKey,
+    walletAddress,
+    usdcCoinType,
+    suiCoinType,
+    logger
+  }: SuiExecutionClientOptions) {
     this.client = new SuiGrpcClient({
       network,
       baseUrl: rpcUrl || defaultRpcUrl(network)
@@ -50,7 +58,9 @@ export class SuiExecutionClient {
   async assertWalletMatches(): Promise<{ address: string }> {
     const derived = this.getAddress();
     if (this.walletAddress && this.walletAddress !== derived) {
-      throw new Error(`AGENT_WALLET_ADDRESS (${this.walletAddress}) does not match derived Sui address (${derived})`);
+      throw new Error(
+        `AGENT_WALLET_ADDRESS (${this.walletAddress}) does not match derived Sui address (${derived})`
+      );
     }
 
     return { address: derived };
@@ -62,8 +72,8 @@ export class SuiExecutionClient {
       this.client.getBalance({ owner, coinType: this.usdcCoinType })
     ]);
 
-    const suiRaw = readBalanceAmount(suiBalance);
-    const usdcRaw = readBalanceAmount(usdcBalance);
+    const suiRaw = readBalanceAmount(suiBalance as unknown as { balance?: Record<string, unknown> });
+    const usdcRaw = readBalanceAmount(usdcBalance as unknown as { balance?: Record<string, unknown> });
 
     return {
       wallet: owner,
@@ -100,7 +110,7 @@ export class SuiExecutionClient {
       throw new Error(message);
     }
 
-    const digest = result.Transaction?.digest ?? result.digest;
+    const digest = result.Transaction?.digest ?? (result as { digest?: string }).digest;
     if (!digest) {
       throw new Error('Transaction submitted without digest');
     }

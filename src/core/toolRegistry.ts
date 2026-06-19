@@ -1,31 +1,30 @@
-import {
-  getMemorySummary,
-  recordPositionAction,
-  recordTweet,
-  shouldSkipWriteAction,
-  updateSnapshots,
-  type AgentPositionActionRecord,
-  type AgentStateV1
-} from './agentMemory.js';
-import { evaluateActionPolicy } from './policy.js';
-import type { SaveOptions } from './memoryStore.js';
-import { formatUnits } from '../utils/amounts.js';
-import { explorerTxUrl } from '../utils/suiNetwork.js';
 import type {
   AgentAction,
   AppConfig,
   Clients,
+  ExecuteTransactionResult,
   LendingRateRow,
   Logger,
-  NetworkName,
   OpenAIFunctionCallItem,
   OpenAIToolDefinition,
   PositionActionKind,
-  SuilendMarket,
-  SuilendObligationResponse,
   SuiBalancesResponse,
-  SwapRoute
+  SuilendMarket,
+  SuilendObligationResponse
 } from '../types.js';
+import { formatUnits } from '../utils/amounts.js';
+import { explorerTxUrl } from '../utils/suiNetwork.js';
+import {
+  type AgentPositionActionRecord,
+  type AgentStateV1,
+  getMemorySummary,
+  recordPositionAction,
+  recordTweet,
+  shouldSkipWriteAction,
+  updateSnapshots
+} from './agentMemory.js';
+import type { SaveOptions } from './memoryStore.js';
+import { evaluateActionPolicy } from './policy.js';
 
 export interface AgentMemoryContext {
   state: AgentStateV1;
@@ -184,7 +183,9 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
 
       const assets = defaultComparisonAssets(config);
       const [suilendResult, naviRows, scallopRows] = await Promise.all([
-        config.sui.protocols.suilend.enabled ? clients.suilend.getMarkets() : Promise.resolve({ markets: [] }),
+        config.sui.protocols.suilend.enabled
+          ? clients.suilend.getMarkets()
+          : Promise.resolve({ markets: [] }),
         clients.navi.getRates(assets),
         clients.scallop.getRates(assets)
       ]);
@@ -195,7 +196,9 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
           (market: SuilendMarket) => market.coinType.toLowerCase() === coinType.toLowerCase()
         );
         const navi = naviRows.find((row: LendingRateRow) => row.asset.toLowerCase() === asset.toLowerCase());
-        const scallop = scallopRows.find((row: LendingRateRow) => row.asset.toLowerCase() === asset.toLowerCase());
+        const scallop = scallopRows.find(
+          (row: LendingRateRow) => row.asset.toLowerCase() === asset.toLowerCase()
+        );
 
         return {
           asset,
@@ -278,54 +281,6 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
         actionId: typeof args.actionId === 'string' ? args.actionId : args.depositId
       }),
 
-    get_swap_quote: async (args) => {
-      if (!config.swap.enableQuotes) {
-        return { ok: false, error: 'Swap quotes are disabled' };
-      }
-
-      const quote = await clients.swap.getQuote({
-        network: readNetworkArg(args.network, config.swap.quoteNetwork),
-        sellToken: readStringArg(args.sellToken, config.swap.quoteSellToken),
-        buyToken: readStringArg(args.buyToken, config.swap.quoteBuyToken),
-        sellAmount: readStringArg(args.sellAmount, config.swap.quoteSellAmount),
-        slippage: readNumberArg(args.slippage, config.swap.maxSlippagePercent),
-        maxSlippage: readNumberArg(args.maxSlippage, config.swap.maxSlippagePercent),
-        user: config.agent.walletAddress
-      });
-
-      return {
-        ok: true,
-        bestRoute: quote.bestRoute ? summarizeRoute(quote.bestRoute) : null,
-        totalAggregators: quote.data?.totalAggregators ?? quote.aggregators?.length ?? 0,
-        validRoutes: quote.validRoutes.map(summarizeRoute)
-      };
-    },
-
-    get_moltx_global_feed: async (args) => {
-      const limit = readNumberArg(args.limit, 10);
-      const type = sanitizeFeedType(args.type);
-
-      try {
-        const result = await clients.social.globalFeed(
-          type !== undefined ? { limit, type } : { limit }
-        );
-        return { ok: true, ...result };
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!type || !message.includes('HTTP 400')) {
-          throw error;
-        }
-
-        const fallback = await clients.social.globalFeed({ limit });
-        return {
-          ok: true,
-          fallbackUsed: true,
-          fallbackReason: `Feed filter rejected by MoltX: ${type}`,
-          ...fallback
-        };
-      }
-    },
-
     inspect_runtime_policy: async () => {
       const treasuryEnabled =
         !config.runtime.dryRun && config.sui.enabled && config.sui.enablePositionCreation;
@@ -336,15 +291,11 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
           dryRun: config.runtime.dryRun,
           suiNetwork: config.sui.network,
           suiRpcUrl: config.sui.rpcUrl ? '(configured)' : '(missing)',
-          enableSwapQuotes: config.swap.enableQuotes,
-          enableAutonomousSwaps: config.swap.enableAutonomousSwaps,
           enableXPosting: config.x.enablePosting,
           enableSuiLending: config.sui.enabled,
           enableSuiPositionCreation: config.sui.enablePositionCreation,
           enableSuiBorrow: config.sui.enableBorrow,
           autoSupplyIntent: treasuryEnabled,
-          maxSlippagePercent: config.swap.maxSlippagePercent,
-          maxPriceImpactPercent: config.swap.maxPriceImpactPercent,
           minIdleRaw: config.sui.minIdleRaw.toString(),
           maxSupplyRaw: config.sui.maxSupplyRaw.toString(),
           maxBorrowRaw: config.sui.maxBorrowRaw.toString(),
@@ -407,12 +358,26 @@ interface SuilendWriteOptions {
 }
 
 async function runSuilendWrite(options: SuilendWriteOptions): Promise<Record<string, unknown>> {
-  const { kind, actionType, args, config, clients, memory, requireObligation, validateBalance, simulateHealthFactor } =
-    options;
+  const {
+    kind,
+    actionType,
+    args,
+    config,
+    clients,
+    memory,
+    requireObligation,
+    validateBalance,
+    simulateHealthFactor
+  } = options;
 
   const asset = resolveAsset(args, config);
   if (!asset) {
-    return { ok: false, blocked: true, reason: 'asset is required (or use market shorthand usdc/sui)', dryRun: config.runtime.dryRun };
+    return {
+      ok: false,
+      blocked: true,
+      reason: 'asset is required (or use market shorthand usdc/sui)',
+      dryRun: config.runtime.dryRun
+    };
   }
 
   const coinType = clients.suilend.resolveCoinType(asset);
@@ -427,11 +392,21 @@ async function runSuilendWrite(options: SuilendWriteOptions): Promise<Record<str
   try {
     amount = BigInt(rawAmount);
   } catch {
-    return { ok: false, blocked: true, reason: 'rawAmount must be a valid integer string', dryRun: config.runtime.dryRun };
+    return {
+      ok: false,
+      blocked: true,
+      reason: 'rawAmount must be a valid integer string',
+      dryRun: config.runtime.dryRun
+    };
   }
 
   if (amount <= 0n) {
-    return { ok: false, blocked: true, reason: 'rawAmount must be greater than zero', dryRun: config.runtime.dryRun };
+    return {
+      ok: false,
+      blocked: true,
+      reason: 'rawAmount must be greater than zero',
+      dryRun: config.runtime.dryRun
+    };
   }
 
   let obligation: SuilendObligationResponse | undefined;
@@ -538,7 +513,7 @@ async function runSuilendWrite(options: SuilendWriteOptions): Promise<Record<str
 
   await clients.suiExecution.assertWalletMatches();
 
-  let result;
+  let result: ExecuteTransactionResult;
   switch (kind) {
     case 'supply':
       result = await clients.suilend.executeSupply({
@@ -590,8 +565,7 @@ async function runSuilendWrite(options: SuilendWriteOptions): Promise<Record<str
     ok: true,
     dryRun: false,
     recordedActionId: record.id,
-    pendingTweet:
-      kind === 'supply' && memory.state.pending.some((task) => task.actionId === record.id),
+    pendingTweet: kind === 'supply' && memory.state.pending.some((task) => task.actionId === record.id),
     digest: result.digest,
     result
   };
@@ -644,21 +618,11 @@ async function handlePostActionUpdate(
   }
 
   if (!config.x.enablePosting) {
-    return {
-      ok: false,
-      blocked: true,
-      reason: 'ENABLE_X_POSTING is false',
-      actionId: action.id
-    };
+    return { ok: false, blocked: true, reason: 'ENABLE_X_POSTING is false', actionId: action.id };
   }
 
   if (!config.x.userAccessToken) {
-    return {
-      ok: false,
-      blocked: true,
-      reason: 'X_USER_ACCESS_TOKEN is missing',
-      actionId: action.id
-    };
+    return { ok: false, blocked: true, reason: 'X_USER_ACCESS_TOKEN is missing', actionId: action.id };
   }
 
   const text =
@@ -676,20 +640,10 @@ async function handlePostActionUpdate(
     });
     await memory.persist({ durable: true });
 
-    return {
-      ok: true,
-      actionId: action.id,
-      tweetId: post.id,
-      text,
-      recordId: tweet.id
-    };
+    return { ok: true, actionId: action.id, tweetId: post.id, text, recordId: tweet.id };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    const tweet = recordTweet(memory.state, {
-      actionId: action.id,
-      status: 'failed',
-      text
-    });
+    const tweet = recordTweet(memory.state, { actionId: action.id, status: 'failed', text });
     await memory.persist({ durable: false });
 
     return {
@@ -722,9 +676,7 @@ function buildSupplyHints(config: AppConfig, usdcRaw: bigint, state: AgentStateV
     suggestedAsset: config.sui.defaultAssets.usdc,
     suggestedCoinType: config.sui.usdcCoinType,
     supplySkipReason: skip.reason,
-    reason: !canSupply
-      ? skip.reason ?? (meetsMin ? null : 'USDC balance below MIN_IDLE_USDC_RAW')
-      : null
+    reason: !canSupply ? (skip.reason ?? (meetsMin ? null : 'USDC balance below MIN_IDLE_USDC_RAW')) : null
   };
 }
 
@@ -737,7 +689,9 @@ async function buildDefaultActionPostText(
   const symbol = inferActionSymbol(action, market);
   const decimals = market?.decimals ?? inferAssetDecimals(action.asset, config);
   const amount = formatUnits(action.rawAmount, decimals);
-  const parts = [`Treasury update: supplied ${amount} ${symbol} into Suilend ${market?.symbol ?? 'market'} on Sui.`];
+  const parts = [
+    `Treasury update: supplied ${amount} ${symbol} into Suilend ${market?.symbol ?? 'market'} on Sui.`
+  ];
 
   if (market?.totalApr !== undefined) {
     parts.push(`Current market APR: ~${formatApr(market.totalApr)}%.`);
@@ -758,8 +712,9 @@ async function findActionMarket(
     const coinType = clients.suilend.resolveCoinType(action.asset);
     const result = await clients.suilend.getMarkets();
     return (
-      result.markets.find((market: SuilendMarket) => market.coinType.toLowerCase() === coinType.toLowerCase()) ??
-      null
+      result.markets.find(
+        (market: SuilendMarket) => market.coinType.toLowerCase() === coinType.toLowerCase()
+      ) ?? null
     );
   } catch {
     return null;
@@ -799,9 +754,7 @@ function defaultComparisonAssets(config: AppConfig): string[] {
     return unique;
   }
 
-  return unique.filter((asset) =>
-    config.sui.allowedAssets.some((entry) => entry.toLowerCase() === asset)
-  );
+  return unique.filter((asset) => config.sui.allowedAssets.some((entry) => entry.toLowerCase() === asset));
 }
 
 async function estimateBorrowUsd(clients: Clients, coinType: string, rawAmount: string): Promise<number> {
@@ -884,7 +837,12 @@ function definitions(): OpenAIToolDefinition[] {
         additionalProperties: false,
         properties: {
           query: { type: 'string', description: 'Natural-language search query.' },
-          limit: { type: 'number', minimum: 1, maximum: 20, description: 'Max memories to return (default 5).' }
+          limit: {
+            type: 'number',
+            minimum: 1,
+            maximum: 20,
+            description: 'Max memories to return (default 5).'
+          }
         },
         required: ['query']
       }
@@ -930,7 +888,8 @@ function definitions(): OpenAIToolDefinition[] {
     {
       type: 'function',
       name: 'get_suilend_obligation',
-      description: 'Read Suilend obligation positions, health factor, and borrow limits for the configured wallet.',
+      description:
+        'Read Suilend obligation positions, health factor, and borrow limits for the configured wallet.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -1038,7 +997,10 @@ function definitions(): OpenAIToolDefinition[] {
         type: 'object',
         additionalProperties: false,
         properties: {
-          actionId: { type: 'string', description: 'Position action id from agent memory or suilend_supply result.' },
+          actionId: {
+            type: 'string',
+            description: 'Position action id from agent memory or suilend_supply result.'
+          },
           text: { type: 'string', description: 'Optional draft post text.' }
         },
         required: []
@@ -1058,55 +1020,8 @@ function definitions(): OpenAIToolDefinition[] {
         },
         required: []
       }
-    },
-    {
-      type: 'function',
-      name: 'get_swap_quote',
-      description: 'Get a MoltX best-route swap quote. This only quotes; it does not execute a transaction.',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          network: { type: 'string', enum: ['ethereum', 'arbitrum', 'base', 'polygon', 'plasma'] },
-          sellToken: { type: 'string', description: 'Token address to sell.' },
-          buyToken: { type: 'string', description: 'Token address to buy.' },
-          sellAmount: { type: 'string', description: 'Raw token amount in smallest units.' },
-          slippage: { type: 'number', description: 'Maximum acceptable slippage percentage.' },
-          maxSlippage: { type: 'number', description: 'Maximum slippage threshold.' }
-        },
-        required: []
-      }
-    },
-    {
-      type: 'function',
-      name: 'get_moltx_global_feed',
-      description: 'Read the MoltX global social feed for context before posting.',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          limit: { type: 'number', minimum: 1, maximum: 50 },
-          type: {
-            type: 'string',
-            description: 'Optional comma-separated content types from: post, quote, repost, reply, article.'
-          }
-        },
-        required: []
-      }
     }
   ];
-}
-
-function summarizeRoute(route: SwapRoute): Record<string, unknown> {
-  return {
-    aggregator: route.displayName,
-    sellTokenAmount: route.data?.sellTokenAmount,
-    buyTokenAmount: route.data?.buyTokenAmount,
-    priceImpact: route.data?.priceImpact,
-    allowanceSpender: route.data?.allowanceSpender,
-    to: route.data?.to,
-    value: route.data?.value
-  };
 }
 
 function redactToolArgs(toolName: string, args: ToolArgs): Record<string, unknown> {
@@ -1133,32 +1048,4 @@ function readStringArg(value: unknown, fallback: string): string {
 
 function readNumberArg(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-function readNetworkArg(value: unknown, fallback: NetworkName): NetworkName {
-  if (
-    value === 'ethereum' ||
-    value === 'arbitrum' ||
-    value === 'base' ||
-    value === 'polygon' ||
-    value === 'plasma'
-  ) {
-    return value;
-  }
-
-  return fallback;
-}
-
-function sanitizeFeedType(value: unknown): string | undefined {
-  if (typeof value !== 'string' || value.trim() === '') {
-    return undefined;
-  }
-
-  const allowedTypes = new Set(['post', 'quote', 'repost', 'reply', 'article']);
-  const valid = value
-    .split(',')
-    .map((part) => part.trim())
-    .filter((part) => allowedTypes.has(part));
-
-  return valid.length > 0 ? valid.join(',') : undefined;
 }

@@ -3,7 +3,7 @@ import { describeSuiPrivateKeyConfig, normalizeSuiPrivateKey } from '../src/util
 
 describe('normalizeSuiPrivateKey', () => {
   test('accepts 64-char hex with 0x prefix', () => {
-    const key = '0x' + 'ab'.repeat(32);
+    const key = `0x${'ab'.repeat(32)}`;
     expect(normalizeSuiPrivateKey(key)).toBe(key.toLowerCase());
   });
 

@@ -1,4 +1,4 @@
-import type { Logger } from '../types.js';
+import type { Logger } from '../../types.js';
 
 interface WalrusBlobClientOptions {
   publisherUrl: string;
@@ -56,7 +56,7 @@ export class WalrusBlobClient {
     const response = await fetch(url, {
       method: 'PUT',
       headers: { 'content-type': 'application/octet-stream' },
-      body: bytes
+      body: bytes as unknown as BodyInit
     });
 
     const text = await response.text();

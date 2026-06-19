@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { XClient } from '../src/clients/xClient.js';
+import { XClient } from '../src/clients/http/xClient.js';
 import type { Logger } from '../src/types.js';
 
 const originalFetch = globalThis.fetch;
@@ -14,13 +14,13 @@ describe('XClient', () => {
     let requestedUrl = '';
     let requestedInit: RequestInit | undefined;
 
-    globalThis.fetch = async (url, init) => {
+    globalThis.fetch = (async (url: URL | RequestInfo, init?: RequestInit) => {
       requestedUrl = String(url);
       requestedInit = init;
       return new Response(JSON.stringify({ data: { id: '1885', text: 'Treasury update' } }), {
         status: 201
       });
-    };
+    }) as unknown as typeof fetch;
 
     const client = new XClient({
       apiBase: 'https://api.x.com',

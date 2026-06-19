@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AppConfig, MemoryBackend, NetworkName, SuiNetwork } from '../types.js';
+import type { AppConfig, MemoryBackend, SuiNetwork } from '../types.js';
 import { normalizeSuiPrivateKey } from './privateKey.js';
 import { defaultExplorerBaseUrl, defaultRpcUrl, defaultUsdcCoinType } from './suiNetwork.js';
 
@@ -35,24 +35,10 @@ export function loadConfig(): AppConfig {
       baseUrl: readString('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
       maxToolRounds: readNumber('MAX_TOOL_ROUNDS', 6)
     },
-    moltx: {
-      apiBase: readString('MOLTX_API_BASE', 'https://moltx.io/v1')
-    },
     x: {
       enablePosting: readBoolean('ENABLE_X_POSTING', false),
       userAccessToken: readString('X_USER_ACCESS_TOKEN', ''),
       apiBase: readString('X_API_BASE', 'https://api.x.com')
-    },
-    swap: {
-      baseUrl: readString('MOLTX_SWAP_BASE', 'https://swap.moltx.io'),
-      enableQuotes: readBoolean('ENABLE_SWAP_QUOTES', false),
-      enableAutonomousSwaps: readBoolean('ENABLE_AUTONOMOUS_SWAPS', false),
-      quoteNetwork: readNetworkName('QUOTE_NETWORK', 'base'),
-      quoteSellToken: readString('QUOTE_SELL_TOKEN', ''),
-      quoteBuyToken: readString('QUOTE_BUY_TOKEN', ''),
-      quoteSellAmount: readString('QUOTE_SELL_AMOUNT', '0'),
-      maxSlippagePercent: readNumber('MAX_SLIPPAGE_PERCENT', 0.5),
-      maxPriceImpactPercent: readNumber('MAX_PRICE_IMPACT_PERCENT', 1)
     },
     sui: {
       enabled: readBoolean('ENABLE_SUI_LENDING', true),
@@ -124,10 +110,7 @@ function loadDotEnv(filePath: string): void {
 }
 
 function stripQuotes(value: string): string {
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
     return value.slice(1, -1);
   }
 
@@ -164,15 +147,6 @@ function readNumber(name: string, fallback: number): number {
   }
 
   return parsed;
-}
-
-function readNetworkName(name: string, fallback: NetworkName): NetworkName {
-  const value = readString(name, fallback);
-  if (['ethereum', 'arbitrum', 'base', 'polygon', 'plasma'].includes(value)) {
-    return value as NetworkName;
-  }
-
-  throw new Error(`${name} must be one of ethereum, arbitrum, base, polygon, plasma`);
 }
 
 function readSuiNetwork(name: string, fallback: SuiNetwork): SuiNetwork {

@@ -1,18 +1,9 @@
 import type { AgentAction, AppConfig, SuilendObligationResponse } from '../types.js';
 
-export function evaluateActionPolicy(action: AgentAction, config: AppConfig): { allowed: boolean; reason: string } {
-  if (action.type === 'SWAP_EXECUTE') {
-    if (!config.swap.enableAutonomousSwaps) {
-      return deny('Autonomous swaps are disabled');
-    }
-
-    if (Number(action.route?.data?.priceImpact ?? 0) > config.swap.maxPriceImpactPercent) {
-      return deny('Route price impact exceeds configured maximum');
-    }
-
-    return allow();
-  }
-
+export function evaluateActionPolicy(
+  action: AgentAction,
+  config: AppConfig
+): { allowed: boolean; reason: string } {
   if (action.type === 'SUILEND_SUPPLY') {
     return evaluateSuilendWrite(action.details ?? {}, config, {
       requirePositionCreation: true,
@@ -47,8 +38,12 @@ export function evaluateActionPolicy(action: AgentAction, config: AppConfig): { 
     }
 
     const projectedHealth = Number(action.details?.projectedHealthFactor ?? Number.POSITIVE_INFINITY);
-    if (projectedHealth < config.sui.minHealthFactor) {
-      return deny(`Borrow would push health factor below SUI_MIN_HEALTH_FACTOR (${config.sui.minHealthFactor})`);
+    // Fail closed: an unparseable/NaN projected health factor must NOT pass the guard
+    // (NaN < x is false, which would silently allow the borrow).
+    if (!Number.isFinite(projectedHealth) || projectedHealth < config.sui.minHealthFactor) {
+      return deny(
+        `Borrow would push health factor below SUI_MIN_HEALTH_FACTOR (${config.sui.minHealthFactor})`
+      );
     }
 
     return allow();
@@ -67,7 +62,7 @@ export function evaluateActionPolicy(action: AgentAction, config: AppConfig): { 
     return allow();
   }
 
-  return deny(`Unknown action type: ${action.type}`);
+  return deny(`Unknown action type: ${(action as { type?: string }).type ?? 'unknown'}`);
 }
 
 export function evaluateHealthGuard(
@@ -106,18 +101,9 @@ function evaluateSuilendWrite(
     return deny('Sui position creation is disabled');
   }
 
-  if (opts.checkDryRun && config.runtime.dryRun) {
-    return allow();
-  }
-
-  if (!config.sui.rpcUrl) {
-    return deny('SUI_RPC_URL is missing');
-  }
-
-  if (!config.sui.privateKey) {
-    return deny('AGENT_SUI_PRIVATE_KEY is missing');
-  }
-
+  // Bounds (allowlist + caps + positive amount) are enforced ALWAYS — including dry-run —
+  // so a dry-run preview is faithful to what live policy would actually allow. Only the
+  // live-execution environment requirements (keys/RPC) are skipped in dry-run below.
   const asset = String(details.asset ?? details.coinType ?? '');
   if (!asset) {
     return deny('asset is required');
@@ -131,13 +117,30 @@ function evaluateSuilendWrite(
     }
   }
 
-  const rawAmount = BigInt(String(details.rawAmount ?? '0'));
+  let rawAmount: bigint;
+  try {
+    rawAmount = BigInt(String(details.rawAmount ?? '0'));
+  } catch {
+    return deny('rawAmount must be a valid integer');
+  }
   if (rawAmount <= 0n) {
     return deny('rawAmount must be greater than zero');
   }
 
   if (rawAmount > opts.maxAmount) {
     return deny(`Requested amount exceeds ${opts.maxLabel}`);
+  }
+
+  if (opts.checkDryRun && config.runtime.dryRun) {
+    return allow();
+  }
+
+  if (!config.sui.rpcUrl) {
+    return deny('SUI_RPC_URL is missing');
+  }
+
+  if (!config.sui.privateKey) {
+    return deny('AGENT_SUI_PRIVATE_KEY is missing');
   }
 
   return allow();

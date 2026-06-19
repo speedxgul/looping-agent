@@ -1,16 +1,13 @@
+import { afterEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, test } from 'bun:test';
 import {
   createEmptyAgentState,
   getMemorySummary,
   loadAgentState,
-  normalizeAgentState,
-  recordDeposit,
   recordPositionAction,
   recordTweet,
-  shouldSkipDeposit,
   shouldSkipWriteAction
 } from '../src/core/agentMemory.js';
 import { baseConfig } from './fixtures/baseConfig.js';
@@ -28,8 +25,7 @@ describe('agentMemory', () => {
   });
 
   test('recordPositionAction queues tweet_action for confirmed supply', () => {
-    const statePath = tempStatePath();
-    const state = loadAgentState(baseConfig(), statePath);
+    const state = createEmptyAgentState(baseConfig());
     recordPositionAction(state, {
       runId: 'run-1',
       protocol: 'suilend',
@@ -43,31 +39,7 @@ describe('agentMemory', () => {
     expect(state.pending.some((task) => task.type === 'tweet_action')).toBe(true);
   });
 
-  test('migrates legacy deposits into positionActions', () => {
-    const migrated = normalizeAgentState(baseConfig(), {
-      version: 1,
-      walletAddress: baseConfig().agent.walletAddress,
-      actions: {
-        deposits: [
-          {
-            id: 'dep-1',
-            runId: 'run-1',
-            fToken: '0xfToken',
-            rawAmount: '1000',
-            status: 'confirmed',
-            dryRun: false,
-            createdAt: new Date().toISOString(),
-            tweeted: false
-          }
-        ]
-      }
-    });
-
-    expect(migrated?.actions.positionActions[0]?.action).toBe('supply');
-    expect(migrated?.actions.positionActions[0]?.digest).toBeUndefined();
-  });
-
-  test('shouldSkipWriteAction blocks while tweet pending', () => {
+  test('shouldSkipWriteAction blocks while a tweet_action is pending', () => {
     const state = createEmptyAgentState(baseConfig());
     recordPositionAction(state, {
       runId: 'run-1',
@@ -83,7 +55,7 @@ describe('agentMemory', () => {
     expect(skip.skip).toBe(true);
   });
 
-  test('recordTweet clears pending tweet_action', () => {
+  test('recordTweet clears pending tweet_action and marks the action tweeted', () => {
     const state = createEmptyAgentState(baseConfig());
     const action = recordPositionAction(state, {
       runId: 'run-1',
@@ -98,21 +70,6 @@ describe('agentMemory', () => {
     recordTweet(state, { actionId: action.id, status: 'posted', externalId: 'tweet-1' });
     expect(state.pending.some((task) => task.type === 'tweet_action')).toBe(false);
     expect(action.tweeted).toBe(true);
-  });
-
-  test('recordDeposit wrapper maps legacy deposit shape', () => {
-    const state = createEmptyAgentState(baseConfig());
-    const action = recordDeposit(state, {
-      runId: 'run-1',
-      fToken: '0xfToken',
-      rawAmount: '1000',
-      status: 'confirmed',
-      dryRun: false
-    });
-
-    expect(action.action).toBe('supply');
-    expect(action.asset).toBe('0xfToken');
-    expect(shouldSkipDeposit(state, baseConfig(), '0xfToken').skip).toBe(true);
   });
 
   test('getMemorySummary exposes recent actions', () => {

@@ -1,13 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { WalrusBlobClient } from '../clients/walrusBlobClient.js';
+import type { WalrusBlobClient } from '../clients/storage/walrusBlobClient.js';
 import type { AppConfig, Logger } from '../types.js';
 import {
+  type AgentStateV1,
   loadAgentState,
   normalizeAgentState,
   resolveAgentStatePath,
-  saveAgentState,
-  type AgentStateV1
+  saveAgentState
 } from './agentMemory.js';
 
 export interface SaveOptions {
@@ -127,7 +127,10 @@ export class WalrusMemoryStore implements MemoryStore {
 
   private resolveBlobId(): string | null {
     const pointer = this.readPointer();
-    if (pointer?.blobId && (!pointer.walletAddress || pointer.walletAddress === this.config.agent.walletAddress.toLowerCase())) {
+    if (
+      pointer?.blobId &&
+      (!pointer.walletAddress || pointer.walletAddress === this.config.agent.walletAddress.toLowerCase())
+    ) {
       return pointer.blobId;
     }
 

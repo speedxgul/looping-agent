@@ -1,5 +1,5 @@
-import { joinUrl, requestJson } from '../utils/http.js';
-import type { Logger, OpenAIInputItem, OpenAIResponse, OpenAIToolDefinition } from '../types.js';
+import type { Logger, OpenAIInputItem, OpenAIResponse, OpenAIToolDefinition } from '../../types.js';
+import { joinUrl, requestJson } from '../../utils/http.js';
 
 interface OpenAIResponsesClientOptions {
   apiKey: string;

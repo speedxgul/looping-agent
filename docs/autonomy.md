@@ -26,8 +26,6 @@ Current tools (see `src/core/toolRegistry.ts`):
 - `get_lending_rates_comparison` — Suilend vs NAVI vs Scallop APR rows
 - `suilend_supply` / `suilend_withdraw` / `suilend_borrow` / `suilend_repay` — bounded Suilend writes
 - `post_action_update` — post a confirmed supply to X (`post_deposit_update` alias retained)
-- `get_swap_quote` — best-route swap quote (EVM-only; disabled by default on Sui)
-- `get_moltx_global_feed` — MoltX global social feed
 
 The model cannot directly call arbitrary code. It only receives these tool definitions.
 

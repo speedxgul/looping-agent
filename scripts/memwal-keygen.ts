@@ -26,7 +26,9 @@ async function main(): Promise<void> {
   console.log('\nNext steps:');
   console.log('  1. Create a MemWalAccount at https://staging.memory.walrus.xyz and copy its account id.');
   console.log('  2. Register the delegate Sui address above on that account.');
-  console.log('  3. Set MEMWAL_ENABLED=true, MEMWAL_ACCOUNT_ID=<account id>, MEMWAL_DELEGATE_KEY=<private key>.\n');
+  console.log(
+    '  3. Set MEMWAL_ENABLED=true, MEMWAL_ACCOUNT_ID=<account id>, MEMWAL_DELEGATE_KEY=<private key>.\n'
+  );
 }
 
 main().catch((error: unknown) => {

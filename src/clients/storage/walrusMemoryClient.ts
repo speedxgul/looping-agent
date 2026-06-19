@@ -1,5 +1,5 @@
 import { MemWal } from '@mysten-incubation/memwal';
-import type { Logger } from '../types.js';
+import type { Logger } from '../../types.js';
 
 interface WalrusMemoryClientOptions {
   enabled: boolean;
@@ -60,7 +60,9 @@ export class WalrusMemoryClient {
       const message = error instanceof Error ? error.message : String(error);
       this.client = null;
       this.disabledReason = message;
-      logger.warn('Failed to initialize Walrus Memory client; running without semantic memory', { error: message });
+      logger.warn('Failed to initialize Walrus Memory client; running without semantic memory', {
+        error: message
+      });
     }
   }
 
