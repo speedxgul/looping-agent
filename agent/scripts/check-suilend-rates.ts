@@ -1,7 +1,7 @@
-import { NaviClient } from '../src/clients/naviClient.js';
-import { ScallopClient } from '../src/clients/scallopClient.js';
-import { SuiExecutionClient } from '../src/clients/sui/suiExecutionClient.js';
-import { SuilendClient } from '../src/clients/suilendClient.js';
+import { NaviClient } from '../src/clients/chain/naviClient.js';
+import { ScallopClient } from '../src/clients/chain/scallopClient.js';
+import { SuiExecutionClient } from '../src/clients/chain/suiExecutionClient.js';
+import { SuilendClient } from '../src/clients/chain/suilendClient.js';
 import { loadConfig } from '../src/utils/config.js';
 import { createLogger } from '../src/utils/logger.js';
 
@@ -23,7 +23,7 @@ async function main() {
 
   const suilend = new SuilendClient({ execution, config, logger });
   const navi = new NaviClient({ execution, config, logger });
-  const scallop = new ScallopClient({ network: config.sui.network, config, logger });
+  const scallop = new ScallopClient({ execution, network: config.sui.network, config, logger });
 
   const { markets } = await suilend.getMarkets();
   console.log('\n=== Suilend markets (allowlisted, ranked by APR) ===');
