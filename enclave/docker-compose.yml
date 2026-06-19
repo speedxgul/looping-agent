@@ -1,0 +1,15 @@
+# Phase A — zero-code proof: deploy Marlin's prebuilt echo server, attest, verify.
+# Swap to the custom image (commented below) for Phase B once you've pushed it.
+services:
+  app:
+    image: marlinorg/oyster-cvm-tutorials-echo-server:latest
+    init: true
+    network_mode: host
+    restart: unless-stopped
+
+  # --- Phase B: your own image (push to a PUBLIC registry first) ---
+  # app:
+  #   image: docker.io/<your-dockerhub-user>/treasury-enclave:latest
+  #   init: true
+  #   network_mode: host
+  #   restart: unless-stopped
