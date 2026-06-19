@@ -2,7 +2,10 @@
 name = "treasury_agent"
 edition = "2024"
 
-# Framework deps (Sui, MoveStdlib) are implicit on Sui 1.45+ — do not list them.
-# Named addresses derive from the package name on Sui CLI 1.63+ — no [addresses] section.
-
 [dependencies]
+
+# Two named addresses in one package: our app (treasury_agent) + the vendored
+# Nautilus/Oyster enclave library (enclave). Both publish at the same package id.
+[addresses]
+treasury_agent = "0x0"
+enclave = "0x0"

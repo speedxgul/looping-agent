@@ -1,11 +1,12 @@
-# Build for the arch you deploy with (Oyster: match `--arch`, default arm64).
-# From the repo root or enclave/app/:
-#   docker buildx build --platform linux/amd64 -t <user>/treasury-enclave:latest --push .
-#   (use linux/arm64 if deploying with the default arch)
+# Build for the arch you deploy with (Oyster default: arm64; pass --platform to match).
+#   docker buildx build --platform linux/arm64 -t <user>/treasury-enclave:latest --push .
 FROM oven/bun:1.3-slim
 
 WORKDIR /app
-COPY server.ts .
+COPY package.json bun.lock* ./
+RUN bun install --production
+
+COPY decision.ts server.ts ./
 
 EXPOSE 8080
 CMD ["bun", "run", "server.ts"]

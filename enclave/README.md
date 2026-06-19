@@ -42,34 +42,62 @@ curl http://<ENCLAVE_IP>:8080/
 `verify` confirms: document structure, certificate-chain signature, root key = AWS Nitro,
 attestation age, and that PCR0/1/2 match the expected image. That's the whole trust check.
 
-## Phase B — your own image
+## Deploy the signing service ([`app/`](app/))
+
+`app/` is now a real **secp256k1 signing service** (not the echo): `/public-key`,
+`POST /sign-decision`. It boots with a parity self-test, so a broken build won't run.
+Oyster default arch is **arm64** (`base/blue/v3.0.0/arm64`) — build to match.
 
 ```bash
-# 1. Build + push to a PUBLIC registry (Oyster pulls at runtime). Match the deploy arch.
+# 1. Build + push to a PUBLIC registry (Oyster pulls at runtime).
 cd enclave/app
-docker buildx build --platform linux/amd64 \
-  -t docker.io/<your-user>/treasury-enclave:latest --push .
+docker buildx build --platform linux/arm64 \
+  -t docker.io/<your-dockerhub-user>/treasury-enclave:latest --push .
 
-# 2. Point docker-compose.yml at your image (uncomment the Phase B block), then:
+# 2. Set docker-compose.yml image to yours, then deploy + verify:
 cd ..
-oyster-cvm build --docker-compose docker-compose.yml   # computes IMAGE_ID / PCRs for YOUR image
-oyster-cvm deploy --wallet-private-key <KEY> --duration-in-minutes 15 \
-  --docker-compose docker-compose.yml --arch amd64
+oyster-cvm build  --docker-compose docker-compose.yml          # expected PCRs / IMAGE_ID for YOUR image
+oyster-cvm deploy --wallet-private-key <KEY> --duration-in-minutes 30 \
+  --docker-compose docker-compose.yml
 oyster-cvm verify --enclave-ip <ENCLAVE_IP> --image-id <IMAGE_ID>
+
+# 3. Talk to the real enclave (its key is generated INSIDE the TEE):
+curl -s http://<ENCLAVE_IP>:8080/public-key
+curl -s -X POST http://<ENCLAVE_IP>:8080/sign-decision -H 'content-type: application/json' \
+  -d '{"treasury":"0x<treasury_id>","amount":1000,"nonce":1}'
 ```
 
-The key idea: **`oyster-cvm build` gives you the expected PCRs for your image**, and
-`verify` checks the running enclave reports those same PCRs — i.e. "the code running is the
-code I built." That PCR is exactly what a Sui Move verifier would later pin (the Nautilus
-`register_enclave` step).
+`verify` confirms the running PCRs match `oyster-cvm build` ("the code running is the code I
+built"), and the attestation binds the enclave's secp256k1 public key to those PCRs.
 
-## What this proves vs. what's next
+## Register it on Sui (consume the attestation)
 
-- ✅ Proves: dockerized workload runs in a real Nitro TEE, produces an AWS-signed attestation,
-  and the attestation verifies against the expected build (PCRs).
-- ⏭️ Next (separate work): map the attestation's enclave public key + PCRs **onto Sui** via the
-  Nautilus `enclave` Move module (`register_enclave` + per-request signature verify), and have
-  the enclave sign a real *decision* the on-chain verifier checks before funds move.
+The `move/` package verifies decisions from this enclave. To wire them together:
+
+```bash
+# publish the package (records PACKAGE_ID + the decision Cap)
+cd ../move && sui client publish
+
+# create the EnclaveConfig pinning the PCRs from `oyster-cvm build`/`verify`
+# (Cap<DECISION>, name, pcr0, pcr1, pcr2, pcr16) → enclave::create_enclave_config
+
+# register: feed the attestation document → stores the enclave's pubkey on-chain
+#   enclave::register_enclave<DECISION>(config, <NitroAttestationDocument>)
+# → shared Enclave<DECISION> object whose pk() the verifier checks per decision
+```
+
+After that, `decision::execute_decision` accepts a `/sign-decision` signature and releases
+bounded funds via `capability::release_for_action`. (Adapt the demo's
+[`register_enclave.sh`](https://github.com/marlinprotocol/sui-oyster-demo/blob/main/contracts/script/register_enclave.sh)
+for the exact CLI calls.)
+
+## What's proven vs. what's left
+
+- ✅ Local: enclave service signs a decision → Sui `decision.move` verifies the exact signature
+  → would release bounded funds (BCS parity self-guarded). See `move/sources/decision.move`.
+- ⏭️ Cloud (needs Docker + funded wallets): deploy the signer to Oyster, publish + register the
+  `move/` package, and have the agent submit `execute_decision` in a PTB.
 
 Docs: [Oyster quickstart](https://docs.marlin.org/oyster/build-cvm/quickstart) ·
-[verify attestations](https://docs.marlin.org/oyster/build-cvm/guides/verify-attestations-oyster-cvm)
+[verify attestations](https://docs.marlin.org/oyster/build-cvm/guides/verify-attestations-oyster-cvm) ·
+[Sui + Oyster](https://docs.marlin.org/oyster/build-cvm/guides/sui-oyster/)
