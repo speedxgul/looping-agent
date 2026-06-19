@@ -161,6 +161,64 @@ export function shouldRebalance(
   return { rebalance: true, deltaBps, reason: 'APR improvement clears rebalance threshold' };
 }
 
+export interface RebalanceBreakevenInput {
+  /** Current net supply APR of the position, percent. */
+  currentNetApr: number;
+  /** Net supply APR if the funds were moved to the target leg, percent. */
+  targetNetApr: number;
+  /** Size of the position being moved, in USD. */
+  amountUsd: number;
+  /** Amortization horizon in days (how long we expect to hold the new position). */
+  horizonDays: number;
+  /** Estimated round-trip execution cost (gas + slippage) in USD. */
+  costUsd: number;
+}
+
+/**
+ * Amortized breakeven gate generalizing {@link shouldRebalance}. A move clears the
+ * gate only when (a) the APR improvement beats the bps floor (hysteresis, reused
+ * from `rebalanceMinAprDeltaBps`) AND (b) the expected extra yield over the horizon
+ * exceeds the execution cost:
+ *
+ *   expectedGainUsd = (targetNetApr - currentNetApr)/100 · amountUsd · (horizonDays/365)
+ *   act ⟺ deltaBps ≥ floor  AND  expectedGainUsd > costUsd
+ *
+ * This is what makes moving already-deployed capital (withdraw A → supply B) worth
+ * the gas; deploying fresh idle capital doesn't need it (no exit cost on the old leg).
+ */
+export function evaluateRebalanceBreakeven(
+  input: RebalanceBreakevenInput,
+  config: AppConfig
+): { act: boolean; deltaBps: number; expectedGainUsd: number; costUsd: number; reason: string } {
+  const floor = shouldRebalance(input.currentNetApr, input.targetNetApr, config);
+  const horizonYears = Math.max(0, input.horizonDays) / 365;
+  const expectedGainUsd =
+    ((input.targetNetApr - input.currentNetApr) / 100) * Math.max(0, input.amountUsd) * horizonYears;
+  const costUsd = Math.max(0, input.costUsd);
+
+  if (!floor.rebalance) {
+    return { act: false, deltaBps: floor.deltaBps, expectedGainUsd, costUsd, reason: floor.reason };
+  }
+
+  if (expectedGainUsd <= costUsd) {
+    return {
+      act: false,
+      deltaBps: floor.deltaBps,
+      expectedGainUsd,
+      costUsd,
+      reason: `Expected gain $${expectedGainUsd.toFixed(4)} over ${input.horizonDays}d does not exceed cost $${costUsd.toFixed(4)}`
+    };
+  }
+
+  return {
+    act: true,
+    deltaBps: floor.deltaBps,
+    expectedGainUsd,
+    costUsd,
+    reason: `Expected gain $${expectedGainUsd.toFixed(4)} over ${input.horizonDays}d clears cost $${costUsd.toFixed(4)} and the ${floor.deltaBps}bps floor`
+  };
+}
+
 function resolveProtocol(actionType: string, details: Record<string, unknown>): LendingProtocol {
   if (actionType.startsWith('SUILEND_')) {
     return 'suilend';

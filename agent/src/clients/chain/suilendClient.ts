@@ -11,6 +11,7 @@ import {
 } from '@suilend/sdk';
 import { createObligationIfNoneExists, sendObligationToUser } from '@suilend/sdk/lib/transactions';
 import { BigNumber } from 'bignumber.js';
+import { type BorrowAprPoint, type ReserveCurve, validatedBorrowAprPoints } from '../../core/allocation.js';
 import type {
   AppConfig,
   ExecuteTransactionResult,
@@ -110,12 +111,57 @@ export class SuilendClient implements LendingProtocolClient {
         borrowApr: reserve.borrowAprPercent.toNumber(),
         totalApr: reserve.depositAprPercent.toNumber(),
         price: reserve.price.toNumber(),
-        allowed: this.isAssetAllowed(reserve.coinType)
+        allowed: this.isAssetAllowed(reserve.coinType),
+        curve: this.buildCurve(reserve)
       }))
       .filter((market) => market.allowed)
       .sort((a, b) => b.totalApr - a.totalApr);
 
     return { markets };
+  }
+
+  /**
+   * Build the reserve rate curve for the allocation solver. Suilend is the richest
+   * source: `config.interestRate` IS the borrow curve as `(utilPercent, aprPercent)`
+   * control points, so we pass it through directly. Amounts are human BigNumbers, so
+   * we re-scale to raw token units to match the solver's raw-amount contract.
+   */
+  private buildCurve(reserve: ParsedReserve): ReserveCurve {
+    const decimals = reserve.mintDecimals;
+    const scale = new BigNumber(10).pow(decimals);
+
+    const points: BorrowAprPoint[] = reserve.config.interestRate
+      .map((point) => ({ util: point.utilPercent.toNumber() / 100, apr: point.aprPercent.toNumber() }))
+      .sort((a, b) => a.util - b.util);
+
+    const utilization = reserve.utilizationPercent.toNumber() / 100;
+    const spotBorrowApr = reserve.borrowAprPercent.toNumber();
+
+    // depositLimit and depositedAmount are both human units; remaining headroom -> raw.
+    const remainingDeposit = reserve.config.depositLimit.minus(reserve.depositedAmount);
+    const depositCapRaw = remainingDeposit.gt(0)
+      ? remainingDeposit.times(scale).integerValue(BigNumber.ROUND_FLOOR).toFixed(0)
+      : '0';
+
+    return {
+      protocol: this.name,
+      asset: reserve.token.symbol,
+      coinType: reserve.coinType,
+      borrowAprPoints: validatedBorrowAprPoints(points, utilization, spotBorrowApr),
+      // spreadFeeBps is the reserve factor in basis points (2000 bps = 20%).
+      reserveFactorPct: reserve.config.spreadFeeBps / 100,
+      borrowedRaw: reserve.borrowedAmount.times(scale).integerValue(BigNumber.ROUND_FLOOR).toFixed(0),
+      availableLiquidityRaw: reserve.availableAmount
+        .times(scale)
+        .integerValue(BigNumber.ROUND_FLOOR)
+        .toFixed(0),
+      depositCapRaw,
+      decimals,
+      price: reserve.price.toNumber(),
+      // v1: base rate only. Suilend exposes depositsPoolRewardManager emissions
+      // (totalRewards/start/end/totalShares) for a v2 reward-APR + share-decay model.
+      rewardSupplyApr: 0
+    };
   }
 
   async getObligation(owner = this.config.agent.walletAddress): Promise<SuilendObligationResponse> {

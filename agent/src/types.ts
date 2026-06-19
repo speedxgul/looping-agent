@@ -6,6 +6,7 @@ import type { OpenAIResponsesClient } from './clients/http/openaiResponsesClient
 import type { XClient } from './clients/http/xClient.js';
 import type { WalrusBlobClient } from './clients/storage/walrusBlobClient.js';
 import type { WalrusMemoryClient } from './clients/storage/walrusMemoryClient.js';
+import type { ReserveCurve } from './core/allocation.js';
 import type { createLogger } from './utils/logger.js';
 
 export type MemoryBackend = 'file' | 'walrus';
@@ -122,6 +123,12 @@ export interface SuilendMarket {
   totalApr: number;
   price: number;
   allowed: boolean;
+  /**
+   * Full reserve rate curve for the allocation solver (own-impact aware). Optional
+   * so existing callers that only read spot APRs keep working; populated by each
+   * protocol's getMarkets when the on-chain curve params are available.
+   */
+  curve?: ReserveCurve;
 }
 
 export interface SuilendMarketsResponse {

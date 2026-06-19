@@ -2,12 +2,13 @@
 
 An extensible v1 scaffold for an autonomous DeFi treasury agent on **Sui**. OpenAI decides what to do, and local tool adapters perform bounded lending actions:
 
-- reads Suilend markets, obligations, and health factor via `@suilend/sdk`
-- compares supply/borrow APRs against NAVI and Scallop (read-only) when enabled
+- reads lending markets, positions, borrow limits, and health factors across Suilend, NAVI, and Scallop when enabled
+- compares supply/borrow APRs across Suilend, NAVI, and Scallop for allowlisted assets
 - persists run history and position actions in `data/agent-state.json`, or on **Walrus** as verifiable, portable blobs (see Walrus Memory & Verifiable Storage)
 - can carry **long-term semantic memory** across sessions and machines via **MemWal (Walrus Memory)**
-- reads Sui wallet USDC/SUI balances and live Suilend APRs to pick allowlisted assets
-- can supply, withdraw, borrow, and repay on Suilend when signer config and policy flags are enabled
+- reads Sui wallet USDC/SUI balances and live protocol APRs to pick allowlisted assets
+- routes idle USDC with an own-impact-aware allocation solver that uses reserve curves and water-filling
+- can supply, withdraw, borrow, and repay on Suilend, NAVI, and Scallop when signer config, protocol write flags, and policy gates allow it
 - auto-repays the largest borrow when health factor drops below `SUI_MIN_HEALTH_FACTOR` (before the LLM loop)
 - can post confirmed supply updates to X when X posting is explicitly enabled
 - defaults to `DRY_RUN=true`, so it will not post or execute transactions unless explicitly enabled
@@ -17,7 +18,7 @@ This version does not require writing Move contracts. It is an off-chain agent t
 ## Branches
 
 - **`base/fluid`** — frozen snapshot of the Base/Fluid (EVM) agent. Use it to reference or run the EVM version.
-- **`main` / `feat/sui-native`** — Sui-native build with Suilend execution, shared agent loop, memory, Walrus/MemWal, and X posting.
+- **`main` / `feat/sui-native`** — Sui-native build with Suilend, NAVI, and Scallop execution, shared agent loop, memory, Walrus/MemWal, and X posting.
 
 ## Quick Start
 
@@ -61,10 +62,11 @@ run from `agent/`, or from the repo root via the passthrough scripts (`bun run t
 1. Loads agent memory from the configured backend (local file or Walrus) and injects a summary into the prompt. When MemWal is enabled, relevant long-term memories are recalled and injected too.
 2. Runs the **health guard** when borrows exist: if health factor is below `SUI_MIN_HEALTH_FACTOR`, auto-repay executes (or records a planned repay in dry-run) before the LLM loop.
 3. Calls OpenAI with tools and the configured mission. `recall_memory` and `remember_insight` let the model read/write durable cross-session memory on demand.
-4. Typical treasury cycle (when live): policy → memory → Suilend obligation → rate comparison → markets → wallet balances → optional supply/withdraw/borrow/repay on Suilend.
-5. Confirmed supply actions are recorded in memory; a `tweet_action` pending task is queued until `post_action_update` successfully posts to X.
-6. Local policy and memory idempotency block duplicate writes (pending tweet, cooldown).
-7. The model returns a final run summary; memory is saved for the next tick. On the Walrus backend, a Markdown run report is archived as a Walrus blob and a reflection is stored in MemWal.
+4. Typical treasury cycle (when live): policy → memory → rate comparison → protocol positions → wallet balances → optimal allocation → optional supply/withdraw/borrow/repay on write-enabled lending protocols.
+5. Idle USDC routing uses `get_optimal_allocation`, which compares write-enabled Suilend, NAVI, and Scallop USDC reserve curves and returns per-protocol supply legs for the model to execute with `lending_supply`.
+6. Confirmed supply actions are recorded in memory; a `tweet_action` pending task is queued only when X posting is enabled and token-configured.
+7. Local policy and memory idempotency block duplicate writes by cooldown. Pending legacy tweet tasks are ignored for treasury execution when X posting is disabled or unconfigured.
+8. The model returns a final run summary; memory is saved for the next tick. On the Walrus backend, a Markdown run report is archived as a Walrus blob and a reflection is stored in MemWal.
 
 For deployable autonomous operation:
 
@@ -81,7 +83,7 @@ The daemon runs one loop every `AUTONOMY_INTERVAL_MS`. Use a process manager, Do
 - `ENABLE_SUI_POSITION_CREATION=false`
 - `ENABLE_SUI_BORROW=false`
 
-To let the agent create Suilend positions, you also need:
+To let the agent create lending positions, you also need:
 
 ```bash
 ENABLE_SUI_POSITION_CREATION=true
@@ -91,12 +93,18 @@ SUI_RPC_URL=https://fullnode.testnet.sui.io:443
 AGENT_SUI_PRIVATE_KEY=0x...   # or suiprivkey1...
 AGENT_WALLET_ADDRESS=0x...  # must match derived address
 SUI_ALLOWED_ASSETS=usdc
+SUI_ALLOWED_PROTOCOLS=suilend,navi,scallop
+ENABLE_SUILEND=true
+ENABLE_NAVI=true
+ENABLE_SCALLOP=true
+ENABLE_NAVI_READS=true
+ENABLE_SCALLOP_READS=true
 SUI_USDC_COIN_TYPE=0x5d4b302506645c37ff133b98c4b50a5ae14841659738d6d733d59d0d217a93bf::coin::COIN
 MIN_IDLE_USDC_RAW=5000000
 SUI_MAX_SUPPLY_AMOUNT_RAW=10000000
 ```
 
-Keep the allowed asset list tight. This project is designed to approve and act only on explicitly allowlisted Suilend markets.
+Keep the allowed asset and protocol lists tight. This project is designed to approve and act only on explicitly allowlisted lending markets.
 
 Derive your Sui address from the configured key:
 
@@ -118,7 +126,7 @@ X_USER_ACCESS_TOKEN=...
 
 `X_USER_ACCESS_TOKEN` must be a preissued user-context access token for the X account that should post, with permission to create posts. This project does not implement OAuth 1.0a or OAuth 2.0 PKCE token issuance in v1.
 
-If `ENABLE_X_POSTING=false`, the token is missing, or the X API call fails, the pending task remains in memory so the agent cannot make another supply until posting is configured or succeeds.
+If `ENABLE_X_POSTING=false` or the token is missing, confirmed supplies do not queue new tweet tasks, and existing legacy `tweet_action` tasks are treated as non-blocking for treasury execution. If X posting is enabled and an X API call fails, the pending task remains in memory so the agent can retry posting on a future run.
 
 ## Walrus Memory & Verifiable Storage
 
@@ -174,9 +182,10 @@ When enabled, each run recalls relevant memories into the prompt and, after the 
 
 1. `bun run doctor` — Sui key, address, RPC, protocol flags
 2. `bun test` — unit tests pass
-3. **Testnet dry run:** `DRY_RUN=true SUI_NETWORK=testnet bun run run:once`
-4. **Testnet live (tiny caps):** supply → withdraw → borrow → repay with digests on suiscan testnet
-5. **Health guard:** borrow near limit → confirm auto-repay when HF drops
+3. `bun run verify:allocation` — allocation solver returns expected protocol legs and APR math
+4. **Testnet dry run:** `DRY_RUN=true SUI_NETWORK=testnet bun run run:once`
+5. **Testnet live (tiny caps):** supply → withdraw → borrow → repay on each enabled protocol, with digests on suiscan testnet
+6. **Health guard:** borrow near limit → confirm auto-repay when HF drops
 
 ## OpenAI
 
