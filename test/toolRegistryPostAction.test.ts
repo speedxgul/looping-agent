@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  type AgentStateV1,
   beginRun,
   createEmptyAgentState,
-  recordPositionAction,
-  type AgentStateV1
+  recordPositionAction
 } from '../src/core/agentMemory.js';
 import { createToolRegistry } from '../src/core/toolRegistry.js';
 import type { AppConfig, Clients, Logger } from '../src/types.js';
@@ -151,7 +151,7 @@ async function executePost(
   });
 }
 
-function createClients(overrides: Partial<Clients> = {}): Clients {
+function createClients(overrides: Record<string, unknown> = {}): Clients {
   return {
     social: {
       globalFeed: async () => ({})

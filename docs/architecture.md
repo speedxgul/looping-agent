@@ -6,7 +6,7 @@ The scaffold separates autonomous decision-making from protocol access.
 
 `src/clients`
 
-Small clients for external services: MoltX (social, swap), Sui execution (sign/submit), Suilend (primary lending), NAVI and Scallop (read-only rate comparison), OpenAI, X, and Walrus (raw blobs + MemWal semantic memory). They do not decide whether an action is safe. They only shape requests and responses.
+Small clients for external services, grouped by kind: `chain/` (Sui execution sign/submit, Suilend primary lending, NAVI and Scallop read-only rate comparison), `http/` (OpenAI, X), and `storage/` (Walrus raw blobs + MemWal semantic memory). They do not decide whether an action is safe. They only shape requests and responses.
 
 `src/core/policy.ts`
 

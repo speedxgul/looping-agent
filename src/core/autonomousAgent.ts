@@ -1,14 +1,3 @@
-import {
-  beginRun,
-  endRun,
-  getMemorySummary,
-  recordArtifact,
-  resolveAgentStatePath,
-  type AgentStateV1
-} from './agentMemory.js';
-import { runHealthGuard } from './healthGuard.js';
-import { createMemoryStore, type SaveOptions } from './memoryStore.js';
-import { createToolRegistry } from './toolRegistry.js';
 import type {
   AppConfig,
   Clients,
@@ -18,6 +7,17 @@ import type {
   OpenAIOutputItem,
   OpenAIResponse
 } from '../types.js';
+import {
+  type AgentStateV1,
+  beginRun,
+  endRun,
+  getMemorySummary,
+  recordArtifact,
+  resolveAgentStatePath
+} from './agentMemory.js';
+import { runHealthGuard } from './healthGuard.js';
+import { createMemoryStore, type SaveOptions } from './memoryStore.js';
+import { createToolRegistry } from './toolRegistry.js';
 
 interface AutonomousAgentOptions {
   config: AppConfig;
@@ -120,7 +120,9 @@ async function recallLongTermMemory({
     return null;
   }
 
-  return memories.map((memory, index) => `${index + 1}. (distance ${memory.distance.toFixed(3)}) ${memory.text}`).join('\n');
+  return memories
+    .map((memory, index) => `${index + 1}. (distance ${memory.distance.toFixed(3)}) ${memory.text}`)
+    .join('\n');
 }
 
 /**
@@ -197,9 +199,7 @@ function buildRunReport({
         .join('\n')
     : '- none';
   const pending = summary.pending.length
-    ? summary.pending
-        .map((task) => `- ${task.type}${task.actionId ? ` (${task.actionId})` : ''}`)
-        .join('\n')
+    ? summary.pending.map((task) => `- ${task.type}${task.actionId ? ` (${task.actionId})` : ''}`).join('\n')
     : '- none';
 
   return [
@@ -278,7 +278,8 @@ async function runToolLoop({ clients, config, logger, toolRegistry, input }: Too
 
   return {
     response: finalResponse,
-    outputText: finalResponse?.output_text ?? extractOutputText(finalResponse) ?? 'Stopped after max tool rounds.'
+    outputText:
+      finalResponse?.output_text ?? extractOutputText(finalResponse) ?? 'Stopped after max tool rounds.'
   };
 }
 
@@ -291,8 +292,8 @@ function buildInstructions(config: AppConfig): string {
     `You are ${config.agent.name}, an autonomous DeFi operations agent on Sui.`,
     `Mission: ${config.agent.mission}`,
     'You operate conservatively. Your job is to observe, reason, and act only through the provided tools.',
-    'Never claim that you executed a swap, supply, borrow, withdraw, or repay unless the tool result says it executed.',
-    'Respect local policy gates: dry-run mode and swap execution flags are final.',
+    'Never claim that you executed a supply, borrow, withdraw, or repay unless the tool result says it executed.',
+    'Respect local policy gates: dry-run mode and position-creation flags are final.',
     'Always start each cycle by calling inspect_runtime_policy.',
     'Call get_agent_memory early to see prior position actions, pending tasks, health alerts, and action cooldown status.',
     'When useful, call recall_memory to retrieve durable cross-session context (past decisions, market notes, blockers) from Walrus Memory, and remember_insight to store a concise, durable insight worth recalling next run.',
@@ -320,10 +321,7 @@ function buildInstructions(config: AppConfig): string {
   return lines.join('\n');
 }
 
-function buildRunPrompt(
-  config: AppConfig,
-  healthGuard: { executed: boolean; reason?: string }
-): string {
+function buildRunPrompt(config: AppConfig, healthGuard: { executed: boolean; reason?: string }): string {
   const cycleType = treasuryModeEnabled(config) ? 'treasury' : 'monitoring';
 
   const toolOrder = treasuryModeEnabled(config)
@@ -344,8 +342,6 @@ function buildRunPrompt(
     `Sui position creation: ${config.sui.enablePositionCreation}`,
     `Sui borrow enabled: ${config.sui.enableBorrow}`,
     `Network: ${config.sui.network}`,
-    `Swap quotes enabled: ${config.swap.enableQuotes}`,
-    `Autonomous swaps enabled: ${config.swap.enableAutonomousSwaps}`,
     healthGuardNote,
     `Suggested tool order: ${toolOrder}.`,
     'Report memory pending tasks, ranked Suilend markets by totalApr, rate comparison rows, wallet USDC, health factor, and any position action or tweet attempts.'

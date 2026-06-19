@@ -29,22 +29,6 @@ export interface AgentPositionActionRecord {
   tweetId?: string;
 }
 
-/** @deprecated Legacy Fluid deposit record kept only for migration input. */
-interface LegacyDepositRecord {
-  id: string;
-  runId: string;
-  fToken: string;
-  symbol?: string;
-  rawAmount: string;
-  underlying?: string;
-  status: ActionStatus;
-  txHash?: string;
-  dryRun: boolean;
-  createdAt: string;
-  tweeted: boolean;
-  tweetId?: string;
-}
-
 export interface AgentTweetRecord {
   id: string;
   actionId?: string;
@@ -157,16 +141,15 @@ export function createEmptyAgentState(config: AppConfig): AgentStateV1 {
   };
 }
 
-type LegacyState = Partial<AgentStateV1> & {
+type LegacyState = Omit<Partial<AgentStateV1>, 'actions' | 'pending'> & {
   actions?: {
-    deposits?: LegacyDepositRecord[];
     positionActions?: AgentPositionActionRecord[];
     tweets?: AgentTweetRecord[];
   };
   pending?: Array<{
     type: string;
-    depositId?: string;
     actionId?: string;
+    depositId?: string;
     createdAt: string;
     obligationId?: string;
     healthFactor?: number;
@@ -180,26 +163,11 @@ export function normalizeAgentState(config: AppConfig, parsed: LegacyState): Age
   }
 
   const wallet = config.agent.walletAddress.toLowerCase();
-  if (parsed.walletAddress && parsed.walletAddress !== wallet) {
+  if (parsed.walletAddress && parsed.walletAddress.toLowerCase() !== wallet) {
     return null;
   }
 
-  const positionActions =
-    parsed.actions?.positionActions ??
-    (parsed.actions?.deposits ?? []).map((deposit) => ({
-      id: deposit.id,
-      runId: deposit.runId,
-      protocol: 'suilend' as const,
-      action: 'supply' as const,
-      asset: deposit.symbol ?? deposit.fToken,
-      rawAmount: deposit.rawAmount,
-      status: deposit.status,
-      digest: deposit.txHash,
-      dryRun: deposit.dryRun,
-      createdAt: deposit.createdAt,
-      tweeted: deposit.tweeted,
-      tweetId: deposit.tweetId
-    }));
+  const positionActions = parsed.actions?.positionActions ?? [];
 
   const pending: AgentPendingTask[] = (parsed.pending ?? []).map((task) => {
     if (task.type === 'tweet_deposit') {
@@ -284,7 +252,10 @@ export function endRun(state: AgentStateV1, runId: string, summary?: string): vo
   }
 }
 
-export function recordPositionAction(state: AgentStateV1, input: RecordPositionActionInput): AgentPositionActionRecord {
+export function recordPositionAction(
+  state: AgentStateV1,
+  input: RecordPositionActionInput
+): AgentPositionActionRecord {
   const id =
     input.digest ??
     (input.dryRun
@@ -324,6 +295,11 @@ export function recordPositionAction(state: AgentStateV1, input: RecordPositionA
     state.actions.positionActions = state.actions.positionActions.slice(0, MAX_ACTIONS);
   }
 
+  // Supply-blocking coupling (intentional, "as it was"): a confirmed live supply queues a
+  // tweet_action, and shouldSkipWriteAction() then blocks any further supply until that tweet
+  // posts (or X posting is disabled / the token is missing). This is a deadlock risk — if it
+  // bites, ENABLE_X_POSTING=false skips posting but the pending task still blocks. To make
+  // posting never block, decouple it (fire-and-forget) instead of queueing here.
   if (record.status === 'confirmed' && !record.dryRun && !record.tweeted && record.action === 'supply') {
     const alreadyPending = state.pending.some(
       (task) => task.type === 'tweet_action' && task.actionId === record.id
@@ -409,11 +385,15 @@ export function recordArtifact(
   return record;
 }
 
-export function getMemorySummary(state: AgentStateV1, config: AppConfig, currentRunId?: string): AgentMemorySummary {
+export function getMemorySummary(
+  state: AgentStateV1,
+  config: AppConfig,
+  currentRunId?: string
+): AgentMemorySummary {
   const skip = shouldSkipWriteAction(state, config);
   return {
     walletAddress: state.walletAddress,
-    currentRunId,
+    ...(currentRunId !== undefined ? { currentRunId } : {}),
     pending: state.pending,
     lastAction: state.actions.positionActions[0] ?? null,
     recentActions: state.actions.positionActions.slice(0, 5),
@@ -431,6 +411,8 @@ export function shouldSkipWriteAction(
   asset?: string,
   action: PositionActionKind = 'supply'
 ): { skip: boolean; reason: string | null } {
+  // Supply-blocking coupling (see recordPositionAction): a pending tweet_action blocks the next
+  // supply until it posts. Deadlock risk; decouple posting to fire-and-forget to remove this gate.
   const pendingTweet = state.pending.find((task) => task.type === 'tweet_action');
   if (pendingTweet && action === 'supply') {
     return { skip: true, reason: 'Complete pending tweet_action before making another supply' };
@@ -466,37 +448,4 @@ export function shouldSkipWriteAction(
 
 export function updateSnapshots(state: AgentStateV1, partial: AgentSnapshots): void {
   state.snapshots = { ...state.snapshots, ...partial };
-}
-
-/** Backward-compatible deposit API used by legacy tests and migration paths. */
-export interface RecordDepositInput {
-  runId: string;
-  fToken: string;
-  rawAmount: string;
-  symbol?: string;
-  underlying?: string;
-  status: ActionStatus;
-  txHash?: string;
-  dryRun: boolean;
-}
-
-export function recordDeposit(state: AgentStateV1, input: RecordDepositInput): AgentPositionActionRecord {
-  return recordPositionAction(state, {
-    runId: input.runId,
-    protocol: 'suilend',
-    action: 'supply',
-    asset: input.symbol ?? input.fToken,
-    rawAmount: input.rawAmount,
-    status: input.status,
-    digest: input.txHash,
-    dryRun: input.dryRun
-  });
-}
-
-export function shouldSkipDeposit(
-  state: AgentStateV1,
-  config: AppConfig,
-  fTokenAddress?: string
-): { skip: boolean; reason: string | null } {
-  return shouldSkipWriteAction(state, config, fTokenAddress, 'supply');
 }

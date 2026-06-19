@@ -1,6 +1,6 @@
-import { Scallop } from '@scallop-io/sui-scallop-sdk';
 import { normalizeStructTag } from '@mysten/sui/utils';
-import type { AppConfig, LendingRateRow, Logger, SuiNetwork } from '../types.js';
+import { Scallop } from '@scallop-io/sui-scallop-sdk';
+import type { AppConfig, LendingRateRow, Logger, SuiNetwork } from '../../types.js';
 
 interface ScallopClientOptions {
   network: SuiNetwork;

@@ -1,18 +1,16 @@
-import { MoltxSocialClient } from './clients/moltxSocialClient.js';
-import { MoltxSwapClient } from './clients/moltxSwapClient.js';
-import { NaviClient } from './clients/naviClient.js';
-import { OpenAIResponsesClient } from './clients/openaiResponsesClient.js';
-import { ScallopClient } from './clients/scallopClient.js';
-import { SuiExecutionClient } from './clients/sui/suiExecutionClient.js';
-import { SuilendClient } from './clients/suilendClient.js';
-import { XClient } from './clients/xClient.js';
-import { WalrusBlobClient } from './clients/walrusBlobClient.js';
-import { WalrusMemoryClient } from './clients/walrusMemoryClient.js';
+import { NaviClient } from './clients/chain/naviClient.js';
+import { ScallopClient } from './clients/chain/scallopClient.js';
+import { SuiExecutionClient } from './clients/chain/suiExecutionClient.js';
+import { SuilendClient } from './clients/chain/suilendClient.js';
+import { OpenAIResponsesClient } from './clients/http/openaiResponsesClient.js';
+import { XClient } from './clients/http/xClient.js';
+import { WalrusBlobClient } from './clients/storage/walrusBlobClient.js';
+import { WalrusMemoryClient } from './clients/storage/walrusMemoryClient.js';
 import { createAutonomousAgent } from './core/autonomousAgent.js';
-import { loadConfig } from './utils/config.js';
-import { describeSuiPrivateKeyConfig } from './utils/privateKey.js';
-import { createLogger } from './utils/logger.js';
 import type { AppConfig, Clients, Logger } from './types.js';
+import { loadConfig } from './utils/config.js';
+import { createLogger } from './utils/logger.js';
+import { describeSuiPrivateKeyConfig } from './utils/privateKey.js';
 
 async function main() {
   const command = process.argv[2] || 'run-once';
@@ -30,14 +28,6 @@ async function main() {
   });
 
   const clients: Clients = {
-    social: new MoltxSocialClient({
-      baseUrl: config.moltx.apiBase,
-      logger
-    }),
-    swap: new MoltxSwapClient({
-      baseUrl: config.swap.baseUrl,
-      logger
-    }),
     suiExecution,
     suilend: new SuilendClient({
       execution: suiExecution,
@@ -142,8 +132,6 @@ async function runDoctor(config: AppConfig, clients: Clients, logger: Logger): P
   logger.info(`NAVI reads enabled: ${config.sui.protocols.navi.enabled}`);
   logger.info(`Scallop reads enabled: ${config.sui.protocols.scallop.enabled}`);
   logger.info(`Min health factor: ${config.sui.minHealthFactor}`);
-  logger.info(`Swap quotes enabled: ${config.swap.enableQuotes}`);
-  logger.info(`Autonomous swaps enabled: ${config.swap.enableAutonomousSwaps}`);
   logger.info(`X posting enabled: ${config.x.enablePosting}`);
   logger.info(`Memory backend: ${config.walrus.memoryBackend}`);
   logger.info(`Walrus publisher: ${config.walrus.publisherUrl}`);
@@ -154,8 +142,13 @@ async function runDoctor(config: AppConfig, clients: Clients, logger: Logger): P
     logger.warn('AGENT_MEMORY_BACKEND=walrus but WALRUS_PUBLISHER_URL is empty.');
   }
 
-  if (config.walrus.memwal.enabled && (!config.walrus.memwal.accountId || !config.walrus.memwal.delegateKey)) {
-    logger.warn('MEMWAL_ENABLED=true but MEMWAL_ACCOUNT_ID or MEMWAL_DELEGATE_KEY is empty. Semantic memory will be disabled.');
+  if (
+    config.walrus.memwal.enabled &&
+    (!config.walrus.memwal.accountId || !config.walrus.memwal.delegateKey)
+  ) {
+    logger.warn(
+      'MEMWAL_ENABLED=true but MEMWAL_ACCOUNT_ID or MEMWAL_DELEGATE_KEY is empty. Semantic memory will be disabled.'
+    );
   }
 
   if (!config.agent.walletAddress) {
@@ -198,12 +191,16 @@ async function runDoctor(config: AppConfig, clients: Clients, logger: Logger): P
     }
 
     if (config.sui.allowedAssets.length === 0) {
-      logger.warn('Position writes enabled but SUI_ALLOWED_ASSETS is empty. All assets are permitted by default.');
+      logger.warn(
+        'Position writes enabled but SUI_ALLOWED_ASSETS is empty. All assets are permitted by default.'
+      );
     }
   }
 
   if (config.sui.enabled && !config.sui.protocols.suilend.enabled) {
-    logger.warn('ENABLE_SUI_LENDING=true but ENABLE_SUILEND=false. Suilend reads and writes will be unavailable.');
+    logger.warn(
+      'ENABLE_SUI_LENDING=true but ENABLE_SUILEND=false. Suilend reads and writes will be unavailable.'
+    );
   }
 
   const rpcOk = await clients.suiExecution.pingRpc();
@@ -222,7 +219,15 @@ async function runDoctor(config: AppConfig, clients: Clients, logger: Logger): P
   }
 }
 
-async function runDaemon({ config, clients, logger }: { config: AppConfig; clients: Clients; logger: Logger }): Promise<void> {
+async function runDaemon({
+  config,
+  clients,
+  logger
+}: {
+  config: AppConfig;
+  clients: Clients;
+  logger: Logger;
+}): Promise<void> {
   const agent = createAutonomousAgent({ config, clients, logger });
   let running = false;
 
@@ -254,10 +259,12 @@ async function runDaemon({ config, clients, logger }: { config: AppConfig; clien
 
 main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(JSON.stringify({
-    time: new Date().toISOString(),
-    level: 'error',
-    message
-  }));
+  console.error(
+    JSON.stringify({
+      time: new Date().toISOString(),
+      level: 'error',
+      message
+    })
+  );
   process.exitCode = 1;
 });

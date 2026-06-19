@@ -12,13 +12,11 @@ interface HttpError extends Error {
 }
 
 export async function requestJson<T = unknown>(url: string, options: RequestJsonOptions = {}): Promise<T> {
-  const {
-    method = 'GET',
-    headers = {},
-    body,
-    retries = 2,
-    retryDelayMs = 500
-  } = options;
+  const { method = 'GET', headers = {}, body, retries = 2, retryDelayMs = 500 } = options;
+
+  // Only retry idempotent reads. Retrying a POST/PUT after a network error or 5xx can
+  // double-submit a request the server already processed (e.g. a duplicate tweet/Walrus blob).
+  const idempotent = method === 'GET' || method === 'HEAD';
 
   let lastError: unknown;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -42,10 +40,10 @@ export async function requestJson<T = unknown>(url: string, options: RequestJson
         throw error;
       }
 
-      return payload;
+      return payload as T;
     } catch (error) {
       lastError = error;
-      if (attempt === retries || !isRetryable(error)) {
+      if (attempt === retries || !idempotent || !isRetryable(error)) {
         throw error;
       }
       await sleep(retryDelayMs * 2 ** attempt);

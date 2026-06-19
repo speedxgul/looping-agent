@@ -1,7 +1,7 @@
-import { SuilendClient } from '../src/clients/suilendClient.js';
-import { SuiExecutionClient } from '../src/clients/sui/suiExecutionClient.js';
 import { NaviClient } from '../src/clients/naviClient.js';
 import { ScallopClient } from '../src/clients/scallopClient.js';
+import { SuiExecutionClient } from '../src/clients/sui/suiExecutionClient.js';
+import { SuilendClient } from '../src/clients/suilendClient.js';
 import { loadConfig } from '../src/utils/config.js';
 import { createLogger } from '../src/utils/logger.js';
 

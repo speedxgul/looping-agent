@@ -38,9 +38,17 @@ export function deriveSuiAddress(privateKey: string): string {
   return createSuiKeypair(privateKey).toSuiAddress();
 }
 
-export function describeSuiPrivateKeyConfig(raw: string): { configured: boolean; valid: boolean; hint?: string } {
+export function describeSuiPrivateKeyConfig(raw: string): {
+  configured: boolean;
+  valid: boolean;
+  hint?: string;
+} {
   if (!raw.trim()) {
-    return { configured: false, valid: false, hint: 'Set AGENT_SUI_PRIVATE_KEY to a suiprivkey or hex private key.' };
+    return {
+      configured: false,
+      valid: false,
+      hint: 'Set AGENT_SUI_PRIVATE_KEY to a suiprivkey or hex private key.'
+    };
   }
 
   try {

@@ -1,23 +1,23 @@
-import {
-  LENDING_MARKET_ID,
-  LENDING_MARKET_TYPE,
-  SuilendClient as SuilendSdkClient,
-  initializeSuilend,
-  parseObligation,
-  type ParsedObligation,
-  type ParsedReserve
-} from '@suilend/sdk';
-import { createObligationIfNoneExists, sendObligationToUser } from '@suilend/sdk/lib/transactions';
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeStructTag } from '@mysten/sui/utils';
-import type { SuiExecutionClient } from './sui/suiExecutionClient.js';
+import {
+  initializeSuilend,
+  LENDING_MARKET_ID,
+  LENDING_MARKET_TYPE,
+  type ParsedObligation,
+  type ParsedReserve,
+  parseObligation,
+  SuilendClient as SuilendSdkClient
+} from '@suilend/sdk';
+import { createObligationIfNoneExists, sendObligationToUser } from '@suilend/sdk/lib/transactions';
 import type {
   AppConfig,
   ExecuteTransactionResult,
   Logger,
   SuilendMarketsResponse,
   SuilendObligationResponse
-} from '../types.js';
+} from '../../types.js';
+import type { SuiExecutionClient } from './suiExecutionClient.js';
 
 interface AgentSuilendClientOptions {
   execution: SuiExecutionClient;
@@ -47,7 +47,11 @@ export class SuilendClient {
       return this.context;
     }
 
-    const client = await SuilendSdkClient.initialize(LENDING_MARKET_ID, LENDING_MARKET_TYPE, this.execution.client);
+    const client = await SuilendSdkClient.initialize(
+      LENDING_MARKET_ID,
+      LENDING_MARKET_TYPE,
+      this.execution.client
+    );
     const { reserveMap } = await initializeSuilend(this.execution.client, client);
     this.context = { client, reserveMap };
     return this.context;
@@ -105,13 +109,17 @@ export class SuilendClient {
 
   async getObligation(owner = this.config.agent.walletAddress): Promise<SuilendObligationResponse> {
     const { client, reserveMap } = await this.getContext();
-    const caps = await SuilendSdkClient.getObligationOwnerCaps(owner, [LENDING_MARKET_TYPE], this.execution.client);
+    const caps = await SuilendSdkClient.getObligationOwnerCaps(
+      owner,
+      [LENDING_MARKET_TYPE],
+      this.execution.client
+    );
 
-    if (caps.length === 0) {
+    const cap = caps[0];
+    if (!cap) {
       return emptyObligation();
     }
 
-    const cap = caps[0];
     const raw = await client.getObligation(cap.obligationId);
     const parsed = parseObligation(raw, reserveMap);
     return toObligationResponse(parsed, cap.id);
@@ -142,9 +150,10 @@ export class SuilendClient {
         [LENDING_MARKET_TYPE],
         this.execution.client
       );
-      if (caps.length > 0) {
-        capId = capId ?? caps[0].id;
-        resolvedObligationId = resolvedObligationId ?? caps[0].obligationId;
+      const cap = caps[0];
+      if (cap) {
+        capId = capId ?? cap.id;
+        resolvedObligationId = resolvedObligationId ?? cap.obligationId;
       }
     }
 
@@ -323,7 +332,10 @@ function emptyObligation(): SuilendObligationResponse {
   };
 }
 
-function toObligationResponse(parsed: ParsedObligation, obligationOwnerCapId: string): SuilendObligationResponse {
+function toObligationResponse(
+  parsed: ParsedObligation,
+  obligationOwnerCapId: string
+): SuilendObligationResponse {
   const weighted = parsed.weightedBorrowsUsd.toNumber();
   const healthFactor = weighted > 0 ? parsed.borrowLimitUsd.toNumber() / weighted : Number.POSITIVE_INFINITY;
 

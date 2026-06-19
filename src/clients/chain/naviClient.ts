@@ -1,7 +1,7 @@
-import { getPools } from '@naviprotocol/lending';
 import { normalizeStructTag } from '@mysten/sui/utils';
-import type { SuiExecutionClient } from './sui/suiExecutionClient.js';
-import type { AppConfig, LendingRateRow, Logger } from '../types.js';
+import { getPools } from '@naviprotocol/lending';
+import type { AppConfig, LendingRateRow, Logger } from '../../types.js';
+import type { SuiExecutionClient } from './suiExecutionClient.js';
 
 interface NaviClientOptions {
   execution: SuiExecutionClient;
@@ -31,9 +31,9 @@ export class NaviClient {
 
     try {
       const pools = await getPools({
-        client: this.execution.client as unknown as Parameters<typeof getPools>[0]['client'],
+        client: this.execution.client,
         env: this.config.sui.network === 'mainnet' ? 'prod' : 'dev'
-      });
+      } as unknown as Parameters<typeof getPools>[0]);
 
       return assets.map((asset) => {
         const coinType = this.resolveCoinType(asset);
@@ -86,11 +86,7 @@ function normalizeCoin(value: string): string {
 // to the incentive `vaultApr` (already a percentage string) when present.
 const NAVI_RAY_TO_PERCENT = 1e25;
 
-function naviRateToPercent(
-  pool: Record<string, unknown>,
-  rateKey: string,
-  incentiveKey: string
-): number {
+function naviRateToPercent(pool: Record<string, unknown>, rateKey: string, incentiveKey: string): number {
   const raw = pool[rateKey];
   if (typeof raw === 'string' && raw.trim()) {
     const parsed = Number(raw) / NAVI_RAY_TO_PERCENT;

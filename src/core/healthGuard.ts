@@ -1,12 +1,12 @@
 import type { AppConfig, Clients, Logger } from '../types.js';
 import {
+  type AgentStateV1,
   clearHealthAlert,
   queueHealthAlert,
-  recordPositionAction,
-  type AgentStateV1
+  recordPositionAction
 } from './agentMemory.js';
-import { evaluateActionPolicy, evaluateHealthGuard } from './policy.js';
 import type { SaveOptions } from './memoryStore.js';
+import { evaluateActionPolicy, evaluateHealthGuard } from './policy.js';
 
 interface HealthGuardOptions {
   state: AgentStateV1;

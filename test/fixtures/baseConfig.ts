@@ -21,24 +21,10 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       baseUrl: 'https://api.openai.com/v1',
       maxToolRounds: 4
     },
-    moltx: {
-      apiBase: 'https://moltx.io/v1'
-    },
     x: {
       enablePosting: false,
       userAccessToken: '',
       apiBase: 'https://api.x.com'
-    },
-    swap: {
-      baseUrl: 'https://swap.moltx.io',
-      enableQuotes: false,
-      enableAutonomousSwaps: false,
-      quoteNetwork: 'base',
-      quoteSellToken: '',
-      quoteBuyToken: '',
-      quoteSellAmount: '0',
-      maxSlippagePercent: 0.5,
-      maxPriceImpactPercent: 1
     },
     sui: {
       enabled: true,
@@ -46,7 +32,7 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       enableBorrow: false,
       rpcUrl: 'https://fullnode.testnet.sui.io:443',
       network: 'testnet',
-      privateKey: '0x' + '11'.repeat(32),
+      privateKey: `0x${'11'.repeat(32)}`,
       walletAddress: '0x0000000000000000000000000000000000000001',
       usdcCoinType: '0x5d4b302506645c37ff133b98c4b50a5ae14841659738d6d733d59d0d217a93bf::coin::COIN',
       suiCoinType: '0x2::sui::SUI',
