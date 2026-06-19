@@ -6,8 +6,11 @@ on:
   pull_request:
 
 jobs:
-  check:
+  agent:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
     steps:
       - uses: actions/checkout@v4
 
