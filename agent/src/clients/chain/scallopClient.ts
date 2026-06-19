@@ -1,6 +1,12 @@
 import type { Transaction } from '@mysten/sui/transactions';
 import { normalizeStructTag } from '@mysten/sui/utils';
 import { Scallop, type ScallopClient as ScallopSdkClient } from '@scallop-io/sui-scallop-sdk';
+import {
+  type BorrowAprPoint,
+  deriveReserveFactorPct,
+  type ReserveCurve,
+  validatedBorrowAprPoints
+} from '../../core/allocation.js';
 import type {
   AppConfig,
   ExecuteTransactionResult,
@@ -128,15 +134,20 @@ export class ScallopClient implements LendingProtocolClient {
         const coinType = String(pool.coinType ?? '');
         const supplyApr = readApr(pool, ['supplyApr', 'supplyApy', 'supplyRate']) * 100;
         const borrowApr = readApr(pool, ['borrowApr', 'borrowApy', 'borrowRate']) * 100;
+        const decimals = Number(pool.coinDecimals ?? pool.coinDecimal ?? 9) || 9;
+        const price = Number(pool.coinPrice ?? 0) || 0;
         return {
           coinType,
           symbol: String(pool.coinName ?? symbolForCoinType(coinType)).toUpperCase(),
-          decimals: Number(pool.coinDecimals ?? 9) || 9,
+          decimals,
           supplyApr,
           borrowApr,
           totalApr: supplyApr,
-          price: Number(pool.coinPrice ?? 0) || 0,
-          allowed: coinType ? this.isAssetAllowed(coinType) : false
+          price,
+          allowed: coinType ? this.isAssetAllowed(coinType) : false,
+          curve: coinType
+            ? buildScallopCurve(pool, coinType, decimals, price, supplyApr, borrowApr)
+            : undefined
         };
       })
       .filter((market) => market.coinType && market.allowed)
@@ -386,6 +397,111 @@ function normalizeCoin(value: string): string {
 function symbolForCoinType(coinType: string): string {
   const tail = coinType.split('::').pop();
   return (tail ?? coinType).toUpperCase();
+}
+
+/**
+ * Build the reserve rate curve for the allocation solver from a Scallop market pool.
+ *
+ * Scallop uses a two-kink model and exposes the already-calculated APR at each kink
+ * (`baseBorrowApr`, `borrowAprOnMidKink`, `borrowAprOnHighKink`, `maxBorrowApr` — as
+ * fractions, matching the readApr(...)*100 convention) plus the kink utilizations
+ * (`midKink`, `highKink`). We turn these into 4 control points (U=0, midKink,
+ * highKink, U=1). When the kink fields aren't present in the indexer payload the
+ * validator falls back to a spot-anchored linear curve (the documented fallback).
+ *
+ * The reserve factor is derived from the spot relationship (scale-safe). veSCA/spool
+ * supply incentives need a separate query and are treated as 0 in v1 (per plan).
+ */
+function buildScallopCurve(
+  pool: Record<string, unknown>,
+  coinType: string,
+  decimals: number,
+  price: number,
+  spotSupplyApr: number,
+  spotBorrowApr: number
+): ReserveCurve | undefined {
+  const scale = 10 ** decimals;
+
+  // Prefer human coin amounts (supplyCoin/borrowCoin); fall back to raw cash/debt.
+  let humanSupply = readNum(pool, ['supplyCoin', 'supplyAmount']);
+  let humanBorrow = readNum(pool, ['borrowCoin', 'borrowAmount']);
+  if (humanSupply <= 0) {
+    const cash = readNum(pool, ['cashAmount']);
+    const debt = readNum(pool, ['debtAmount']);
+    humanSupply = (cash + debt) / scale;
+    humanBorrow = debt / scale;
+  }
+  if (!Number.isFinite(humanSupply) || humanSupply <= 0) {
+    return undefined;
+  }
+
+  let utilization = normalizeFraction(readNum(pool, ['utilizationRate']));
+  if (utilization <= 0) {
+    utilization = clampFraction(humanBorrow / humanSupply);
+  }
+
+  const midKink = normalizeFraction(readNum(pool, ['midKink']));
+  const highKink = normalizeFraction(readNum(pool, ['highKink']));
+  const baseApr = readNum(pool, ['baseBorrowApr']) * 100;
+  const midApr = readNum(pool, ['borrowAprOnMidKink']) * 100;
+  const highApr = readNum(pool, ['borrowAprOnHighKink']) * 100;
+  const maxApr = readNum(pool, ['maxBorrowApr']) * 100;
+
+  const candidate: BorrowAprPoint[] =
+    midKink > 0 &&
+    highKink > midKink &&
+    highKink < 1 &&
+    [baseApr, midApr, highApr, maxApr].every(Number.isFinite)
+      ? [
+          { util: 0, apr: baseApr },
+          { util: midKink, apr: midApr },
+          { util: highKink, apr: highApr },
+          { util: 1, apr: maxApr }
+        ]
+      : [];
+
+  // Remaining supply headroom from the human supply cap, when available.
+  const maxSupply = readNum(pool, ['maxSupplyCoin']);
+  const depositCapRaw =
+    maxSupply > humanSupply ? BigInt(Math.floor((maxSupply - humanSupply) * scale)).toString() : undefined;
+
+  return {
+    protocol: 'scallop',
+    asset: String(pool.coinName ?? symbolForCoinType(coinType)).toUpperCase(),
+    coinType,
+    borrowAprPoints: validatedBorrowAprPoints(candidate, utilization, spotBorrowApr),
+    reserveFactorPct: deriveReserveFactorPct(spotBorrowApr, spotSupplyApr, utilization),
+    borrowedRaw: humanBorrow > 0 ? BigInt(Math.floor(humanBorrow * scale)).toString() : '0',
+    availableLiquidityRaw: BigInt(Math.floor(Math.max(0, humanSupply - humanBorrow) * scale)).toString(),
+    depositCapRaw,
+    decimals,
+    price,
+    rewardSupplyApr: 0
+  };
+}
+
+function readNum(pool: Record<string, unknown>, keys: string[]): number {
+  for (const key of keys) {
+    const value = pool[key];
+    const parsed = typeof value === 'string' ? Number(value) : (value as number);
+    if (typeof parsed === 'number' && Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return 0;
+}
+
+function clampFraction(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+/** Normalize a possibly-percent value (e.g. 80) into a [0,1] fraction. */
+function normalizeFraction(value: number): number {
+  const v = value > 1 ? value / 100 : value;
+  return clampFraction(v);
 }
 
 function readApr(pool: Record<string, unknown>, keys: string[]): number {

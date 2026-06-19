@@ -28,6 +28,7 @@ import {
   shouldSkipWriteAction,
   updateSnapshots
 } from './agentMemory.js';
+import { netSupplyApr, type ReserveCurve, solveAllocation } from './allocation.js';
 import type { SaveOptions } from './memoryStore.js';
 import { evaluateActionPolicy } from './policy.js';
 
@@ -267,6 +268,8 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
 
     get_best_supply_target: async () => getBestSupplyTarget(config, clients),
 
+    get_optimal_allocation: async () => getOptimalAllocation(config, clients, memory),
+
     get_lending_positions: async (args) => {
       if (!config.sui.enabled) {
         return { ok: false, error: 'Sui lending is disabled' };
@@ -501,17 +504,21 @@ async function runLendingWrite(options: LendingWriteOptions): Promise<Record<str
       break;
   }
 
-  const record = recordPositionAction(memory.state, {
-    runId: memory.runId,
-    protocol,
-    action: kind,
-    asset,
-    rawAmount,
-    ...(positions?.obligationId ? { obligationId: positions.obligationId } : {}),
-    status: 'confirmed',
-    digest: result.digest,
-    dryRun: false
-  });
+  const record = recordPositionAction(
+    memory.state,
+    {
+      runId: memory.runId,
+      protocol,
+      action: kind,
+      asset,
+      rawAmount,
+      ...(positions?.obligationId ? { obligationId: positions.obligationId } : {}),
+      status: 'confirmed',
+      digest: result.digest,
+      dryRun: false
+    },
+    { enablePosting: config.x.enablePosting && Boolean(config.x.userAccessToken) }
+  );
   await memory.persist({ durable: true });
 
   return {
@@ -578,6 +585,136 @@ async function getBestSupplyTarget(config: AppConfig, clients: Clients): Promise
     rebalanceMinAprDeltaBps: config.sui.rebalanceMinAprDeltaBps,
     candidates
   };
+}
+
+/**
+ * Own-impact-aware yield router. Instead of dumping the whole budget into today's
+ * top spot APR (which is provably suboptimal because depositing lowers that pool's
+ * rate), this gathers each write-enabled protocol's full reserve curve and runs the
+ * water-filling solver to split idle USDC so the marginal net yield is equalized.
+ * Returns the per-leg allocation the model should execute via `lending_supply`.
+ */
+async function getOptimalAllocation(
+  config: AppConfig,
+  clients: Clients,
+  memory: AgentMemoryContext
+): Promise<Record<string, unknown>> {
+  if (!config.sui.enabled) {
+    return { ok: false, error: 'Sui lending is disabled' };
+  }
+  if (!config.agent.walletAddress) {
+    return { ok: false, error: 'AGENT_WALLET_ADDRESS is not configured' };
+  }
+
+  // Budget = idle USDC, capped by the treasury supply hints (min idle / max supply).
+  const balances = await clients.suiExecution.getCoinBalances(config.agent.walletAddress);
+  const usdcRaw = BigInt(balances.usdc.raw);
+  const hints = buildSupplyHints(config, usdcRaw, memory.state);
+  const budgetRaw = BigInt(hints.supplyableRaw);
+
+  // Gather the USDC reserve curve from each write-enabled, allowlisted protocol.
+  const usdcAsset = config.sui.defaultAssets.usdc;
+  const curves: ReserveCurve[] = [];
+  const skipped: Array<{ protocol: LendingProtocol; reason: string }> = [];
+
+  for (const protocol of PROTOCOLS) {
+    if (!config.sui.protocols[protocol]?.write || !config.sui.allowedProtocols.includes(protocol)) {
+      skipped.push({ protocol, reason: 'not write-enabled or not allowlisted' });
+      continue;
+    }
+    const client = protocolClient(clients, protocol);
+    const coinType = client.resolveCoinType(usdcAsset);
+    let market: LendingMarket | undefined;
+    try {
+      market = (await client.getMarkets()).markets.find((m) => sameCoinType(m.coinType, coinType));
+    } catch {
+      skipped.push({ protocol, reason: 'getMarkets failed' });
+      continue;
+    }
+    if (!market) {
+      skipped.push({ protocol, reason: 'no USDC market' });
+      continue;
+    }
+    if (!market.curve) {
+      skipped.push({ protocol, reason: 'no reserve curve available' });
+      continue;
+    }
+    curves.push(market.curve);
+  }
+
+  if (curves.length === 0) {
+    return {
+      ok: true,
+      asset: usdcAsset,
+      budgetRaw: budgetRaw.toString(),
+      canSupply: hints.canSupply,
+      allocations: [],
+      reason: hints.reason ?? 'No eligible reserve curves to allocate across',
+      skipped
+    };
+  }
+
+  const allocation = solveAllocation({
+    curves,
+    budgetRaw,
+    perProtocolCapRaw: config.sui.maxSupplyRaw,
+    minPositionRaw: config.sui.minIdleRaw > 0n ? config.sui.minIdleRaw : undefined
+  });
+
+  // Enrich each leg with what `lending_supply` needs plus a spot-vs-optimized view.
+  const legs = allocation.allocations.map((leg) => {
+    const curve = curves.find((c) => c.protocol === leg.protocol);
+    return {
+      protocol: leg.protocol,
+      asset: leg.asset,
+      coinType: leg.coinType,
+      rawAmount: leg.xRaw,
+      ...(curve ? { amountFormatted: formatUnits(leg.xRaw, curve.decimals), decimals: curve.decimals } : {}),
+      netSupplyApr: leg.netSupplyApr,
+      spotNetApr: curve ? round4(netSupplyApr(curve, 0n)) : undefined,
+      share: round4(leg.share)
+    };
+  });
+
+  // Naive baseline (the old heuristic) for the rationale: dump everything into the
+  // pool with the best current spot rate, then read its post-deposit net APR.
+  const spotRanked = [...curves].sort((a, b) => netSupplyApr(b, 0n) - netSupplyApr(a, 0n));
+  const naiveCurve = spotRanked[0];
+  const naive = naiveCurve
+    ? {
+        protocol: naiveCurve.protocol,
+        spotNetApr: round4(netSupplyApr(naiveCurve, 0n)),
+        netAprIfAllHere: round4(netSupplyApr(naiveCurve, budgetRaw))
+      }
+    : null;
+
+  const improvementBps =
+    naive && budgetRaw > 0n ? Math.round((allocation.blendedNetApr - naive.netAprIfAllHere) * 100) : 0;
+
+  return {
+    ok: true,
+    asset: usdcAsset,
+    budgetRaw: budgetRaw.toString(),
+    canSupply: hints.canSupply,
+    allocations: legs,
+    blendedNetApr: allocation.blendedNetApr,
+    marginalApr: allocation.marginalApr,
+    allocatedRaw: allocation.allocatedRaw,
+    unallocatedRaw: allocation.unallocatedRaw,
+    naive,
+    improvementBpsVsNaive: improvementBps,
+    rebalanceMinAprDeltaBps: config.sui.rebalanceMinAprDeltaBps,
+    rationale:
+      'Allocation equalizes marginal net supply APR across pools (water-filling). Supply each leg ' +
+      'with lending_supply using its protocol + rawAmount. blendedNetApr is the budget-weighted yield; ' +
+      'marginalApr is the equalized marginal rate. Skipped protocols lacked write access, an allowlist ' +
+      'entry, a USDC market, or a parseable reserve curve.',
+    skipped: skipped.length > 0 ? skipped : undefined
+  };
+}
+
+function round4(value: number): number {
+  return Math.round(value * 1e4) / 1e4;
 }
 
 async function handlePostActionUpdate(
@@ -926,7 +1063,14 @@ function definitions(): OpenAIToolDefinition[] {
       type: 'function',
       name: 'get_best_supply_target',
       description:
-        'Rank net supply APR across write-enabled protocols (Suilend, NAVI, Scallop) for allowlisted assets. Returns the best protocol+asset to supply, the runner-up, and the APR delta (bps) for rebalance decisions. Use before lending_supply.',
+        'Rank net supply APR across write-enabled protocols (Suilend, NAVI, Scallop) for allowlisted assets. Returns the best protocol+asset to supply, the runner-up, and the APR delta (bps) for rebalance decisions. Simple highest-APR heuristic; prefer get_optimal_allocation.',
+      parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
+    },
+    {
+      type: 'function',
+      name: 'get_optimal_allocation',
+      description:
+        "Compute the optimal split of idle USDC across write-enabled protocols using each pool's full reserve rate curve (own-impact aware, water-filling). Returns an allocation vector (protocol + rawAmount per leg), blended and marginal net APR, and the improvement vs the naive highest-APR heuristic. PREFERRED over get_best_supply_target: supply each returned leg via lending_supply.",
       parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
     },
     {

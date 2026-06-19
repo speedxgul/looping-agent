@@ -13,6 +13,12 @@ import {
   updateOraclePriceBeforeUserOperationPTB,
   withdrawCoinPTB
 } from '@naviprotocol/lending';
+import {
+  type BorrowAprPoint,
+  deriveReserveFactorPct,
+  type ReserveCurve,
+  validatedBorrowAprPoints
+} from '../../core/allocation.js';
 import type {
   AppConfig,
   ExecuteTransactionResult,
@@ -122,15 +128,18 @@ export class NaviClient implements LendingProtocolClient {
         const coinType = withHexPrefix(String(pool.coinType ?? ''));
         const supplyApr = naviRateToPercent(pool, 'currentSupplyRate', 'supplyIncentiveApyInfo');
         const borrowApr = naviRateToPercent(pool, 'currentBorrowRate', 'borrowIncentiveApyInfo');
+        const decimals = oracleDecimals(pool);
+        const price = oraclePrice(pool);
         return {
           coinType,
           symbol: symbolForCoinType(coinType),
-          decimals: oracleDecimals(pool),
+          decimals,
           supplyApr,
           borrowApr,
           totalApr: supplyApr,
-          price: oraclePrice(pool),
-          allowed: this.isAssetAllowed(coinType)
+          price,
+          allowed: this.isAssetAllowed(coinType),
+          curve: buildNaviCurve(pool, coinType, decimals, price, supplyApr, borrowApr)
         };
       })
       .filter((market) => market.coinType && market.allowed)
@@ -350,6 +359,111 @@ function naviRateToPercent(pool: Record<string, unknown>, rateKey: string, incen
   }
 
   return 0;
+}
+
+// NAVI's rate factors are RAY-scaled (1e27); /1e25 yields percent (matches the
+// currentBorrowRate/currentSupplyRate convention used by naviRateToPercent).
+function rayToPercent(raw: unknown): number {
+  const value = Number(raw);
+  return Number.isFinite(value) ? value / NAVI_RAY_TO_PERCENT : Number.NaN;
+}
+
+function numberOr(raw: unknown, fallback: number): number {
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Build the allocation-solver reserve curve for a NAVI pool. NAVI exposes a classic
+ * Aave one-kink model in `borrowRateFactors.fields` (baseRate, multiplier,
+ * jumpRateMultiplier, optimalUtilization) -> 3 control points at U=0, U=optimal, U=1.
+ *
+ * Scale-safety: liquidity magnitude is derived from USD pool values + price (reliable)
+ * rather than ambiguously-scaled raw totals; the reserve factor is derived from the
+ * known spot relationship instead of guessing reserveFactor units; and the kink curve
+ * is validated against the live spot borrow APR, falling back to a spot-anchored
+ * linear curve if the RAY assumption doesn't reproduce it.
+ */
+function buildNaviCurve(
+  pool: Record<string, unknown>,
+  coinType: string,
+  decimals: number,
+  price: number,
+  spotSupplyApr: number,
+  spotBorrowApr: number
+): ReserveCurve | undefined {
+  const scale = 10 ** decimals;
+
+  // Liquidity from USD values + price -> human -> raw token units.
+  const supplyUsd = numberOr(pool.poolSupplyValue, Number.NaN);
+  const borrowUsd = numberOr(pool.poolBorrowValue, Number.NaN);
+  let humanSupply: number;
+  let humanBorrow: number;
+  if (price > 0 && Number.isFinite(supplyUsd) && Number.isFinite(borrowUsd)) {
+    humanSupply = supplyUsd / price;
+    humanBorrow = borrowUsd / price;
+  } else {
+    // Fallback: treat totals as raw token units.
+    humanBorrow = numberOr(pool.totalBorrow, 0) / scale;
+    humanSupply = numberOr(pool.totalSupply, 0) / scale;
+  }
+  const utilization = humanSupply > 0 ? clampFraction(humanBorrow / humanSupply) : 0;
+
+  const factors = ((pool.borrowRateFactors as Record<string, unknown> | undefined)?.fields ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const baseApr = rayToPercent(factors.baseRate);
+  const multiplier = rayToPercent(factors.multiplier);
+  const jump = rayToPercent(factors.jumpRateMultiplier);
+  let optimalUtil = numberOr(factors.optimalUtilization, Number.NaN) / 1e27;
+  if (optimalUtil > 1) {
+    optimalUtil /= 100; // tolerate a percent-scaled value
+  }
+
+  const candidate: BorrowAprPoint[] = [];
+  if (
+    Number.isFinite(baseApr) &&
+    Number.isFinite(multiplier) &&
+    Number.isFinite(jump) &&
+    optimalUtil > 0 &&
+    optimalUtil < 1
+  ) {
+    candidate.push({ util: 0, apr: baseApr });
+    candidate.push({ util: optimalUtil, apr: baseApr + multiplier });
+    candidate.push({ util: 1, apr: baseApr + multiplier + jump });
+  }
+
+  const incentive = pool.supplyIncentiveApyInfo as Record<string, unknown> | undefined;
+  const rewardSupplyApr = numberOr(incentive?.apy, 0);
+
+  // Remaining deposit headroom from USD cap, scale-safe.
+  const capUsd = numberOr(pool.poolSupplyCapValue, Number.NaN);
+  let depositCapRaw: string | undefined;
+  if (price > 0 && Number.isFinite(capUsd) && Number.isFinite(supplyUsd) && capUsd > supplyUsd) {
+    depositCapRaw = String(Math.floor(((capUsd - supplyUsd) / price) * scale));
+  }
+
+  return {
+    protocol: 'navi',
+    asset: symbolForCoinType(coinType),
+    coinType,
+    borrowAprPoints: validatedBorrowAprPoints(candidate, utilization, spotBorrowApr),
+    reserveFactorPct: deriveReserveFactorPct(spotBorrowApr, spotSupplyApr, utilization),
+    borrowedRaw: String(Math.floor(Math.max(0, humanBorrow) * scale)),
+    availableLiquidityRaw: String(Math.floor(Math.max(0, humanSupply - humanBorrow) * scale)),
+    depositCapRaw,
+    decimals,
+    price,
+    rewardSupplyApr
+  };
+}
+
+function clampFraction(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, value));
 }
 
 function errorMessage(error: unknown): string {

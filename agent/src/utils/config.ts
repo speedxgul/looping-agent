@@ -72,11 +72,11 @@ export function loadConfig(): AppConfig {
         },
         navi: {
           enabled: readBoolean('ENABLE_NAVI_READS', true),
-          write: readBoolean('ENABLE_NAVI', false)
+          write: readBoolean('ENABLE_NAVI', true)
         },
         scallop: {
           enabled: readBoolean('ENABLE_SCALLOP_READS', true),
-          write: readBoolean('ENABLE_SCALLOP', false)
+          write: readBoolean('ENABLE_SCALLOP', true)
         }
       }
     },

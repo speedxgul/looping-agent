@@ -298,12 +298,13 @@ function buildInstructions(config: AppConfig): string {
     'Call get_agent_memory early to see prior position actions, pending tasks, health alerts, and action cooldown status.',
     'When useful, call recall_memory to retrieve durable cross-session context (past decisions, market notes, blockers) from Walrus Memory, and remember_insight to store a concise, durable insight worth recalling next run.',
     'A health guard may auto-repay critical borrows (on any protocol) before you run; do not fight or duplicate that action.',
-    'If a wallet is configured and Sui lending is enabled, call get_best_supply_target and get_lending_rates_comparison to compare Suilend vs NAVI vs Scallop supply/borrow APRs across allowlisted assets.',
+    'If a wallet is configured and Sui lending is enabled, call get_lending_rates_comparison to compare Suilend vs NAVI vs Scallop supply/borrow APRs across allowlisted assets.',
     'Call get_lending_positions per protocol you hold positions on to read deposits, borrows, and health factor.',
     'Call get_sui_balances before any supply to see idle USDC and treasury hints.',
-    'Act as a yield router: supply to the protocol+asset with the highest net supply APR (get_best_supply_target.best). Only move already-supplied funds when the APR delta clears SUI_REBALANCE_MIN_APR_DELTA_BPS.',
+    "Act as an own-impact-aware yield router: call get_optimal_allocation, which splits idle USDC across protocols by equalizing marginal net supply APR (water-filling) rather than dumping everything into the single highest spot rate. Supply EACH returned leg with lending_supply using that leg's protocol + rawAmount.",
+    'get_optimal_allocation is preferred over get_best_supply_target (the latter is a simpler highest-APR fallback). Only move already-supplied funds when the improvement clears SUI_REBALANCE_MIN_APR_DELTA_BPS and the amortized gain beats execution cost.',
     'Use lending_supply/lending_withdraw/lending_borrow/lending_repay with an explicit protocol (suilend|navi|scallop). Writes are gated by SUI_ALLOWED_PROTOCOLS and per-protocol enable flags.',
-    'If memory shows pending tweet_action, do NOT call lending_supply; use post_action_update instead. If X posting is blocked, report the config blocker.',
+    'A pending tweet_action only matters when X posting is enabled (ENABLE_X_POSTING=true with a token): in that case handle it with post_action_update before new supplies. If X posting is disabled or unconfigured, IGNORE any pending tweet_action and proceed with supplies normally — the tweet can never post and must not block treasury actions.',
     'Position actions are recorded automatically in agent memory; do not duplicate supplies within the cooldown window.',
     'Borrow only when simulated health factor stays above SUI_MIN_HEALTH_FACTOR.',
     'If an action is blocked, explain the blocker and the next configuration change needed.',
@@ -312,8 +313,8 @@ function buildInstructions(config: AppConfig): string {
 
   if (treasuryModeEnabled(config)) {
     lines.push(
-      'Treasury mode is ON: when USDC balance meets MIN_IDLE_USDC_RAW and memory allows, call lending_supply into get_best_supply_target.best (protocol+asset) using supplyableRaw from get_sui_balances, capped by SUI_MAX_SUPPLY_AMOUNT_RAW.',
-      'After a confirmed supply, memory will queue tweet_action; attempt post_action_update when appropriate.'
+      'Treasury mode is ON: when USDC balance meets MIN_IDLE_USDC_RAW and memory allows, call get_optimal_allocation and supply each allocation leg via lending_supply (protocol + rawAmount per leg). The solver already caps each leg by SUI_MAX_SUPPLY_AMOUNT_RAW and per-pool deposit limits.',
+      'After a confirmed supply, memory queues a tweet_action only when X posting is enabled; when it does, attempt post_action_update. When posting is disabled, no tweet is queued and supplies proceed without that step.'
     );
   } else {
     lines.push('Prefer read-only monitoring when dry-run or position creation is disabled.');
@@ -326,8 +327,8 @@ function buildRunPrompt(config: AppConfig, healthGuard: { executed: boolean; rea
   const cycleType = treasuryModeEnabled(config) ? 'treasury' : 'monitoring';
 
   const toolOrder = treasuryModeEnabled(config)
-    ? 'inspect_runtime_policy → get_agent_memory → get_best_supply_target → get_lending_rates_comparison → get_lending_positions → get_sui_balances → (lending_supply|withdraw|borrow|repay OR post_action_update if pending)'
-    : 'inspect_runtime_policy → get_agent_memory → get_best_supply_target → get_lending_rates_comparison → get_lending_positions';
+    ? 'inspect_runtime_policy → get_agent_memory → get_lending_rates_comparison → get_lending_positions → get_sui_balances → get_optimal_allocation → (lending_supply per allocation leg|withdraw|borrow|repay OR post_action_update if pending)'
+    : 'inspect_runtime_policy → get_agent_memory → get_lending_rates_comparison → get_lending_positions → get_optimal_allocation';
 
   const healthGuardNote = healthGuard.executed
     ? 'Health guard auto-repay executed before this cycle.'

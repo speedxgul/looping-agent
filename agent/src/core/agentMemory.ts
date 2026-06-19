@@ -254,7 +254,8 @@ export function endRun(state: AgentStateV1, runId: string, summary?: string): vo
 
 export function recordPositionAction(
   state: AgentStateV1,
-  input: RecordPositionActionInput
+  input: RecordPositionActionInput,
+  options?: { enablePosting?: boolean }
 ): AgentPositionActionRecord {
   const id =
     input.digest ??
@@ -293,12 +294,17 @@ export function recordPositionAction(
     state.actions.positionActions = state.actions.positionActions.slice(0, MAX_ACTIONS);
   }
 
-  // Supply-blocking coupling (intentional, "as it was"): a confirmed live supply queues a
-  // tweet_action, and shouldSkipWriteAction() then blocks any further supply until that tweet
-  // posts (or X posting is disabled / the token is missing). This is a deadlock risk — if it
-  // bites, ENABLE_X_POSTING=false skips posting but the pending task still blocks. To make
-  // posting never block, decouple it (fire-and-forget) instead of queueing here.
-  if (record.status === 'confirmed' && !record.dryRun && !record.tweeted && record.action === 'supply') {
+  // A confirmed live supply queues a tweet_action that shouldSkipWriteAction() uses to block the
+  // next supply until the tweet posts. Only queue it when X posting is actually enabled — otherwise
+  // the task can never clear and would either deadlock supplies or accumulate as dead pending work.
+  const queueTweet = options?.enablePosting ?? true;
+  if (
+    queueTweet &&
+    record.status === 'confirmed' &&
+    !record.dryRun &&
+    !record.tweeted &&
+    record.action === 'supply'
+  ) {
     const alreadyPending = state.pending.some(
       (task) => task.type === 'tweet_action' && task.actionId === record.id
     );
@@ -410,9 +416,12 @@ export function shouldSkipWriteAction(
   action: PositionActionKind = 'supply'
 ): { skip: boolean; reason: string | null } {
   // Supply-blocking coupling (see recordPositionAction): a pending tweet_action blocks the next
-  // supply until it posts. Deadlock risk; decouple posting to fire-and-forget to remove this gate.
+  // supply until it posts. This gate only applies when X posting is actually possible — if posting
+  // is disabled or no token is configured, the tweet can never post, so it must not block supplies
+  // (otherwise the agent deadlocks on a task it can never clear).
+  const postingEnabled = config.x.enablePosting && Boolean(config.x.userAccessToken);
   const pendingTweet = state.pending.find((task) => task.type === 'tweet_action');
-  if (pendingTweet && action === 'supply') {
+  if (postingEnabled && pendingTweet && action === 'supply') {
     return { skip: true, reason: 'Complete pending tweet_action before making another supply' };
   }
 
