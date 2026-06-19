@@ -45,6 +45,12 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       explorerBaseUrl: 'https://suiscan.xyz/testnet/tx',
       allowedProtocols: ['suilend', 'navi', 'scallop'],
       rebalanceMinAprDeltaBps: 50,
+      rebalancing: {
+        enabled: true,
+        planOnly: true,
+        horizonDays: 7,
+        estimatedCostUsd: 0.02
+      },
       defaultAssets: { usdc: 'usdc', sui: 'sui' },
       protocols: {
         suilend: { enabled: true, write: true },

@@ -302,6 +302,7 @@ function buildInstructions(config: AppConfig): string {
     'Call get_lending_positions per protocol you hold positions on to read deposits, borrows, and health factor.',
     'Call get_sui_balances before any supply to see idle USDC and treasury hints.',
     "Act as an own-impact-aware yield router: call get_optimal_allocation, which splits idle USDC across protocols by equalizing marginal net supply APR (water-filling) rather than dumping everything into the single highest spot rate. Supply EACH returned leg with lending_supply using that leg's protocol + rawAmount.",
+    'When rebalancing is enabled, call get_rebalance_plan after reading positions and allocation context. Treat it as plan-only: report proposed withdraw/supply moves and reasons, but do not execute rebalances unless a future runtime policy explicitly enables live rebalancing.',
     'get_optimal_allocation is preferred over get_best_supply_target (the latter is a simpler highest-APR fallback). Only move already-supplied funds when the improvement clears SUI_REBALANCE_MIN_APR_DELTA_BPS and the amortized gain beats execution cost.',
     'Use lending_supply/lending_withdraw/lending_borrow/lending_repay with an explicit protocol (suilend|navi|scallop). Writes are gated by SUI_ALLOWED_PROTOCOLS and per-protocol enable flags.',
     'A pending tweet_action only matters when X posting is enabled (ENABLE_X_POSTING=true with a token): in that case handle it with post_action_update before new supplies. If X posting is disabled or unconfigured, IGNORE any pending tweet_action and proceed with supplies normally — the tweet can never post and must not block treasury actions.',
@@ -327,8 +328,8 @@ function buildRunPrompt(config: AppConfig, healthGuard: { executed: boolean; rea
   const cycleType = treasuryModeEnabled(config) ? 'treasury' : 'monitoring';
 
   const toolOrder = treasuryModeEnabled(config)
-    ? 'inspect_runtime_policy → get_agent_memory → get_lending_rates_comparison → get_lending_positions → get_sui_balances → get_optimal_allocation → (lending_supply per allocation leg|withdraw|borrow|repay OR post_action_update if pending)'
-    : 'inspect_runtime_policy → get_agent_memory → get_lending_rates_comparison → get_lending_positions → get_optimal_allocation';
+    ? 'inspect_runtime_policy → get_agent_memory → get_lending_rates_comparison → get_lending_positions → get_sui_balances → get_optimal_allocation → get_rebalance_plan when enabled → (lending_supply per allocation leg|withdraw|borrow|repay OR post_action_update if pending)'
+    : 'inspect_runtime_policy → get_agent_memory → get_lending_rates_comparison → get_lending_positions → get_optimal_allocation → get_rebalance_plan when enabled';
 
   const healthGuardNote = healthGuard.executed
     ? 'Health guard auto-repay executed before this cycle.'

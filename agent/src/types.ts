@@ -62,6 +62,12 @@ export interface AppConfig {
     allowedProtocols: LendingProtocol[];
     /** Min supply-APR improvement (basis points) before moving existing funds. */
     rebalanceMinAprDeltaBps: number;
+    rebalancing: {
+      enabled: boolean;
+      planOnly: boolean;
+      horizonDays: number;
+      estimatedCostUsd: number;
+    };
     defaultAssets: {
       usdc: string;
       sui: string;
