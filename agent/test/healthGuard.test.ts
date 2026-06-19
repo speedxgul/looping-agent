@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createEmptyAgentState } from '../src/core/agentMemory.js';
 import { runHealthGuard } from '../src/core/healthGuard.js';
-import type { AppConfig, Clients, Logger } from '../src/types.js';
+import type { Clients, Logger } from '../src/types.js';
 import { baseConfig } from './fixtures/baseConfig.js';
 
 const usdcCoinType = '0x5d4b302506645c37ff133b98c4b50a5ae14841659738d6d733d59d0d217a93bf::coin::COIN';
@@ -31,8 +31,9 @@ describe('runHealthGuard', () => {
     });
 
     expect(result.executed).toBe(false);
-    expect(result.reason).toBe('Dry run: planned auto-repay');
+    expect(result.reason).toContain('dry-run: planned auto-repay');
     expect(state.actions.positionActions[0]).toMatchObject({
+      protocol: 'suilend',
       action: 'repay',
       status: 'planned',
       dryRun: true
@@ -64,7 +65,7 @@ describe('runHealthGuard', () => {
     });
 
     expect(result.executed).toBe(false);
-    expect(result.reason).toBe('Health factor ok');
+    expect(result.reason).toContain('health ok');
     expect(state.actions.positionActions).toHaveLength(0);
   });
 
@@ -117,6 +118,7 @@ function createClients(
     executeRepay?: Clients['suilend']['executeRepay'];
   } = {}
 ): Clients {
+  const borrows = (options.borrows ?? []).map((b) => ({ ...b, side: 'borrow' as const }));
   return {
     suiExecution: {
       isConfigured: () => true,
@@ -127,30 +129,39 @@ function createClients(
         sui: { symbol: 'SUI', coinType: '0x2::sui::SUI', decimals: 9, raw: '0', formatted: '0' },
         usdc: { symbol: 'USDC', coinType: usdcCoinType, decimals: 6, raw: '10000000', formatted: '10' }
       }),
-      signAndExecute: async () => ({ digest: '0xabc', effects: {} })
+      signAndExecute: async () => ({ digest: '0xabc', success: true })
     },
     suilend: {
+      name: 'suilend',
+      enabled: true,
+      requiresObligationForWrite: true,
       resolveCoinType: (asset: string) => asset,
+      isAssetAllowed: () => true,
       getMarkets: async () => ({ markets: [] }),
-      getObligation: async () => ({
+      getPositions: async () => ({
+        protocol: 'suilend' as const,
         obligationId: '0xobligation',
+        obligationOwnerCapId: '0xcap',
         deposits: [],
-        borrows: options.borrows ?? [],
-        healthFactor: options.healthFactor ?? null,
+        borrows,
+        healthFactor: options.healthFactor ?? Number.POSITIVE_INFINITY,
         borrowLimitUsd: 0,
-        liquidationThresholdUsd: 0
+        weightedBorrowsUsd: 0,
+        depositedAmountUsd: 0,
+        borrowedAmountUsd: 0
       }),
-      executeSupply: async () => ({ digest: '0xabc' }),
-      executeWithdraw: async () => ({ digest: '0xabc' }),
-      executeBorrow: async () => ({ digest: '0xabc' }),
+      executeSupply: async () => ({ digest: '0xabc', success: true }),
+      executeWithdraw: async () => ({ digest: '0xabc', success: true }),
+      executeBorrow: async () => ({ digest: '0xabc', success: true }),
       executeRepay:
         options.executeRepay ??
         (async () => {
-          return { digest: '0xabc' };
-        })
+          return { digest: '0xabc', success: true };
+        }),
+      simulateHealthFactorAfterBorrow: async () => Number.POSITIVE_INFINITY
     },
-    navi: { isEnabled: () => false, getRates: async () => ({ rates: [] }) },
-    scallop: { isEnabled: () => false, getRates: async () => ({ rates: [] }) },
+    navi: { name: 'navi', enabled: false, getRates: async () => [] },
+    scallop: { name: 'scallop', enabled: false, getRates: async () => [] },
     openai: { create: async () => ({ output: [] }) },
     walrusBlob: {
       upload: async () => ({ blobId: 'blob-1', url: 'https://example.com/blob-1' }),

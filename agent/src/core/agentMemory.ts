@@ -258,9 +258,7 @@ export function recordPositionAction(
 ): AgentPositionActionRecord {
   const id =
     input.digest ??
-    (input.dryRun
-      ? `dry-run-${input.runId}-${input.action}-${input.asset.toLowerCase()}`
-      : `${input.runId}-${input.action}-${input.asset.toLowerCase()}`);
+    `${input.dryRun ? 'dry-run-' : ''}${input.runId}-${input.protocol}-${input.action}-${input.asset.toLowerCase()}`;
 
   const existing = state.actions.positionActions.find((action) => action.id === id);
   const record: AgentPositionActionRecord = existing ?? {

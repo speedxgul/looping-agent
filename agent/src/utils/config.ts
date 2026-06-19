@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AppConfig, MemoryBackend, SuiNetwork } from '../types.js';
+import type { AppConfig, LendingProtocol, MemoryBackend, SuiNetwork } from '../types.js';
 import { normalizeSuiPrivateKey } from './privateKey.js';
 import { defaultExplorerBaseUrl, defaultRpcUrl, defaultUsdcCoinType } from './suiNetwork.js';
 
@@ -57,14 +57,27 @@ export function loadConfig(): AppConfig {
       maxBorrowRaw: BigInt(readString('SUI_MAX_BORROW_AMOUNT_RAW', '5000000')),
       minHealthFactor: readNumber('SUI_MIN_HEALTH_FACTOR', 1.25),
       explorerBaseUrl: readString('SUI_EXPLORER_TX_BASE', defaultExplorerBaseUrl(network)),
+      allowedProtocols: readLendingProtocols('SUI_ALLOWED_PROTOCOLS', ['suilend', 'navi', 'scallop']),
+      rebalanceMinAprDeltaBps: readNumber('SUI_REBALANCE_MIN_APR_DELTA_BPS', 50),
       defaultAssets: {
         usdc: readString('SUI_DEFAULT_USDC_ASSET', 'usdc'),
         sui: readString('SUI_DEFAULT_SUI_ASSET', 'sui')
       },
       protocols: {
-        suilend: { enabled: readBoolean('ENABLE_SUILEND', true) },
-        navi: { enabled: readBoolean('ENABLE_NAVI_READS', true) },
-        scallop: { enabled: readBoolean('ENABLE_SCALLOP_READS', true) }
+        // `enabled` gates reads; `write` gates supply/withdraw/borrow/repay.
+        // Suilend writes default on (proven path); NAVI/Scallop writes are opt-in.
+        suilend: {
+          enabled: readBoolean('ENABLE_SUILEND', true),
+          write: readBoolean('ENABLE_SUILEND', true)
+        },
+        navi: {
+          enabled: readBoolean('ENABLE_NAVI_READS', true),
+          write: readBoolean('ENABLE_NAVI', false)
+        },
+        scallop: {
+          enabled: readBoolean('ENABLE_SCALLOP_READS', true),
+          write: readBoolean('ENABLE_SCALLOP', false)
+        }
       }
     },
     walrus: {
@@ -177,4 +190,12 @@ function readCsv(name: string): string[] {
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
+}
+
+function readLendingProtocols(name: string, fallback: LendingProtocol[]): LendingProtocol[] {
+  const csv = readCsv(name).map((value) => value.toLowerCase());
+  const valid = csv.filter(
+    (value): value is LendingProtocol => value === 'suilend' || value === 'navi' || value === 'scallop'
+  );
+  return valid.length > 0 ? valid : fallback;
 }

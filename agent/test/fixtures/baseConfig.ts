@@ -43,11 +43,13 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       maxBorrowRaw: 1000n,
       minHealthFactor: 1.25,
       explorerBaseUrl: 'https://suiscan.xyz/testnet/tx',
+      allowedProtocols: ['suilend', 'navi', 'scallop'],
+      rebalanceMinAprDeltaBps: 50,
       defaultAssets: { usdc: 'usdc', sui: 'sui' },
       protocols: {
-        suilend: { enabled: true },
-        navi: { enabled: false },
-        scallop: { enabled: false }
+        suilend: { enabled: true, write: true },
+        navi: { enabled: false, write: false },
+        scallop: { enabled: false, write: false }
       }
     },
     walrus: {
