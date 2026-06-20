@@ -18,10 +18,12 @@ COPY --chown=bun:bun action_intent.ts allocation.ts decide.ts server.ts ./
 # Run as non-root.
 USER bun
 
-EXPOSE 8080
+# App serves on :3000 (Marlin Oyster convention); attestation is served by the
+# Oyster base image on :1301.
+EXPOSE 3000
 
 # Healthcheck via Bun's fetch (no curl needed in the slim image).
 HEALTHCHECK --interval=30s --timeout=3s --start-period=3s --retries=3 \
-  CMD bun -e "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD bun -e "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["bun", "run", "server.ts"]

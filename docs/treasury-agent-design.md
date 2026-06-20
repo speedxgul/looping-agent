@@ -302,6 +302,13 @@ sequenceDiagram
 `register_enclave` rejects any public key whose PCRs don't match the registered
 measurement — the one check that makes the running code un-swappable.
 
+**Deployment note.** Our enclave runs as a TypeScript/Bun service on **Marlin
+Oyster** (Nitro), and `enclave.move` is the Nautilus-compatible contract vendored
+from the Marlin Oyster demo. It shares the exact on-chain pattern (`EnclaveConfig` /
+`Enclave` / `verify_signature` / `register_enclave`) with Mysten's reference
+Nautilus — which ships a *Rust* enclave plus AWS tooling. We deliberately stay on
+the TS/Oyster path; the on-chain half is identical either way.
+
 ## 9. The runtime loop
 
 ```mermaid
@@ -408,28 +415,41 @@ The `OwnerCap` revoke kills every future action in one transaction.
 ## 12. The sealed key (Seal)
 
 Attestation stops a swapped image from producing valid signatures. Seal stops a
-swapped image from even **starting.**
+swapped image from even **starting** — it withholds the secrets a modified image
+would need to run.
+
+The enclave holds a **second key** for this: an ElGamal *encryption* key (separate
+from its secp256k1 signing key). Seal encrypts to that key, so the relaying host
+never sees plaintext even while it shuttles the request.
 
 ```mermaid
 sequenceDiagram
-    actor Owner
+    actor Admin
     participant Seal as Seal key servers
     participant Approve as seal_approve (Move policy)
     participant Enc as 🔒 Enclave
 
-    Owner->>Seal: Seal-encrypt(signing seed + strategy weights) to the PCR
-    Note over Enc: on every boot
-    Enc->>Enc: produce attestation (current PCRs)
-    Enc->>Seal: request decryption keys
-    Seal->>Approve: do these PCRs match the registered enclave?
-    alt match
-        Approve-->>Seal: approve → decrypt inside the TEE
-        Note over Enc: same key persists across reboots · strategy stays confidential
+    Admin->>Seal: Seal-encrypt(signing seed + strategy weights), gated to the PCR
+    Note over Enc: on every boot (admin endpoints)
+    Enc->>Seal: init_seal_key_load — FetchKeyRequest (ElGamal pubkey + signed cert)
+    Seal->>Approve: check seal_approve
+    Approve->>Approve: sig over WalletPK intent · key id = vector[0] · sender == wallet pk
+    alt PCR matches the registered enclave
+        Approve-->>Seal: approve
+        Seal-->>Enc: encrypted key shares → complete_seal_key_load decrypts + caches
+        Note over Enc: provision_* decrypts seed/weights · agent now functional
     else modified image (different PCR)
-        Approve-->>Seal: DENY
-        Note over Enc: ⛔ can't decrypt → can't run or sign (fail-closed)
+        Approve-->>Seal: DENY → can't decrypt → can't run or sign (fail-closed)
     end
 ```
+
+**How `seal_approve` decides (Nautilus + Seal).** It verifies a signature from the
+enclave's ephemeral key over an `IntentMessage` scoped to `WalletPK`, a fixed key id
+`vector[0]`, and that the transaction sender equals the wallet public key — together
+proving only the attested enclave (holding both keys) could have produced the
+request. The enclave loads secrets in three admin steps: `init_seal_key_load` →
+`complete_seal_key_load` (caches the Seal keys) → `provision_*` (decrypts our
+signing seed / strategy weights).
 
 Without Seal a per-boot key is un-extractable but ephemeral. With Seal the key and
 strategy weights are persistent and confidential, released only to the exact
