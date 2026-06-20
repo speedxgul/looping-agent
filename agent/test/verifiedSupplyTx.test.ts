@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import type { ActionIntent } from '../src/core/actionIntent.js';
 import {
+  type AllocationRefs,
+  buildVerifiedAllocationTx,
   buildVerifiedSupplyNaviTx,
   buildVerifiedSupplyScallopTx,
   buildVerifiedSupplySuilendTx,
@@ -174,5 +176,22 @@ describe('buildVerifiedSupplyNaviTx structural', () => {
     const mock = commandsOf(buildVerifiedSupplyTx(REFS, INTENT, 1n, SIG_HEX))[0];
     expect(navi?.MoveCall?.arguments).toHaveLength(27);
     expect(mock?.MoveCall?.arguments).toHaveLength(22);
+  });
+});
+
+describe('buildVerifiedAllocationTx (multi-leg PTB)', () => {
+  const suilendLeg = { intent: { ...INTENT, protocolId: 0, nonce: 5n }, signatureHex: SIG_HEX };
+  const naviLeg = { intent: { ...INTENT, protocolId: 2, nonce: 6n }, signatureHex: SIG_HEX };
+  const allRefs: AllocationRefs = { suilend: SUILEND_REFS, navi: NAVI_REFS };
+
+  it('bundles one command per leg, routed by protocolId, preserving order (nonce order)', () => {
+    const cmds = commandsOf(buildVerifiedAllocationTx([suilendLeg, naviLeg], allRefs, 1_700_000_000_000n));
+    expect(cmds).toHaveLength(2);
+    expect(cmds[0]?.MoveCall?.function).toBe('verified_supply_suilend_entry');
+    expect(cmds[1]?.MoveCall?.function).toBe('verified_supply_navi_entry');
+  });
+
+  it('throws when a leg has no matching protocol refs', () => {
+    expect(() => buildVerifiedAllocationTx([naviLeg], { suilend: SUILEND_REFS }, 1n)).toThrow(/NAVI leg/);
   });
 });

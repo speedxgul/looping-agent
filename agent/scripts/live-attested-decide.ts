@@ -15,7 +15,7 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Secp256k1Keypair } from '@mysten/sui/keypairs/secp256k1';
 import { fromBase64 } from '@mysten/sui/utils';
 import type { ActionIntent } from '../src/core/actionIntent.ts';
-import { buildVerifiedSupplyTx } from '../src/core/verifiedSupplyTx.ts';
+import { type AllocationLeg, buildVerifiedAllocationTx } from '../src/core/verifiedSupplyTx.ts';
 
 const env = (k: string): string => {
   const v = process.env[k];
@@ -129,7 +129,10 @@ async function enclaveDecide(treasury: string, perTxCap: string) {
     body: JSON.stringify(body)
   });
   if (!res.ok) throw new Error(`enclave /decide failed: HTTP ${res.status} ${await res.text()}`);
-  return (await res.json()) as { public_key: string; signature: string; intent: Record<string, unknown> };
+  return (await res.json()) as {
+    public_key: string;
+    legs: Array<{ intent: Record<string, unknown>; signature: string }>;
+  };
 }
 
 // Rebuild the agent-side ActionIntent from the enclave's returned (serialized) intent,
@@ -160,22 +163,22 @@ async function main() {
   console.log('TREASURY:', treasury, '| per_tx_cap:', perTxCap);
 
   const decided = await enclaveDecide(treasury, perTxCap);
-  const intent = toIntent(decided.intent);
   console.log('\nenclave key:', decided.public_key);
-  console.log('ENCLAVE DECISION (made in the TEE):');
-  console.log(
-    '  protocol_id:',
-    intent.protocolId,
-    intent.protocolId === 255 ? '(mock adapter)' : '(NOT executable on this package)'
-  );
-  console.log(
-    '  amount     :',
-    intent.amount.toString(),
-    `(budget ${BUDGET}, clamped to per_tx_cap ${perTxCap})`
-  );
 
-  if (intent.protocolId !== 255) {
-    console.log('\nThe optimizer picked a venue with no on-chain adapter here; skipping submit.');
+  // The enclave returns one signed intent PER funded allocation leg (sequential nonces).
+  const legs: AllocationLeg[] = decided.legs.map((l) => ({
+    intent: toIntent(l.intent),
+    signatureHex: l.signature
+  }));
+  console.log(`ENCLAVE DECISION (made in the TEE): ${legs.length} leg(s), budget ${BUDGET}, per_tx_cap ${perTxCap}`);
+  for (const leg of legs) {
+    console.log(`  protocol_id ${leg.intent.protocolId}  amount ${leg.intent.amount}  nonce ${leg.intent.nonce}`);
+  }
+
+  // On testnet only the mock adapter (255) is deployed; a real multi-protocol split can
+  // only execute live on mainnet (Suilend/Scallop/NAVI exist there).
+  if (!legs.every((l) => l.intent.protocolId === 255)) {
+    console.log('\nSome legs target protocols with no testnet adapter; only mock (255) executes here. Skipping submit.');
     return;
   }
 
@@ -188,14 +191,29 @@ async function main() {
     agentCapId: AGENTCAP
   };
   const signer = loadSigner(ADDR);
-  const tx = buildVerifiedSupplyTx(refs, intent, TS, decided.signature);
+
+  // ALL legs in ONE PTB (atomic; sequential nonces consume in command order).
+  const tx = buildVerifiedAllocationTx(legs, { mock: refs }, TS);
   const r = await client.signAndExecuteTransaction({
     signer,
     transaction: tx,
     options: { showEffects: true, showEvents: true }
   });
-  console.log('\nverified_supply_entry ->', r.effects?.status, '| tx:', r.digest);
+  console.log('\nverified allocation ->', r.effects?.status, '| tx:', r.digest);
   for (const e of r.events ?? []) console.log('  event:', e.type.split('::').pop(), e.parsedJson);
+
+  // Tamper test: reuse the signatures but bump the first leg's amount — the on-chain
+  // verify must reject (the signature is over the exact decided fields).
+  const tamperedLegs = legs.map((l, i) =>
+    i === 0 ? { ...l, intent: { ...l.intent, amount: l.intent.amount + 1n } } : l
+  );
+  const txBad = buildVerifiedAllocationTx(tamperedLegs, { mock: refs }, TS);
+  try {
+    const rBad = await client.signAndExecuteTransaction({ signer, transaction: txBad, options: { showEffects: true } });
+    console.log('\n[TAMPER] ->', rBad.effects?.status, '(SHOULD be failure)');
+  } catch (err) {
+    console.log('\n[TAMPER] rejected as expected:', String(err).split('\n')[0].slice(0, 150));
+  }
 }
 
 main().catch((e) => {

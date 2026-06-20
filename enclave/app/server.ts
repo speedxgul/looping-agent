@@ -17,7 +17,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
-import { type ActionIntent, runActionIntentSelfTest, signActionIntent } from './action_intent.ts';
+import { type ActionIntent, runActionIntentSelfTest } from './action_intent.ts';
 import { type DecideInput, decide } from './decide.ts';
 
 const PORT = 3000;
@@ -52,33 +52,10 @@ function loadKey(): Uint8Array {
 // --- JSON ↔ ActionIntent/DecideInput helpers ---
 // HTTP carries bigints as strings and byte vectors as number[].
 
-const u8arr = (v: unknown): Uint8Array =>
-  Uint8Array.from(Array.isArray(v) ? (v as unknown[]).map(Number) : []);
-
 const u8num = (v: unknown): number[] =>
   Array.isArray(v) ? (v as unknown[]).map(Number) : [];
 
 const big = (v: unknown): bigint => BigInt(v as string | number);
-
-function parseActionIntent(body: Record<string, unknown>): ActionIntent {
-  return {
-    schemaVersion: Number(body.schemaVersion),
-    chainId: u8arr(body.chainId),
-    treasuryId: String(body.treasuryId),
-    agentCapId: String(body.agentCapId),
-    nonce: big(body.nonce),
-    expiresAtMs: big(body.expiresAtMs),
-    actionKind: Number(body.actionKind),
-    protocolId: Number(body.protocolId),
-    assetType: u8arr(body.assetType),
-    amount: big(body.amount),
-    minHealthFactorBps: big(body.minHealthFactorBps),
-    maxProtocolExposure: big(body.maxProtocolExposure),
-    policyHash: u8arr(body.policyHash),
-    inputHash: u8arr(body.inputHash),
-    rationaleHash: u8arr(body.rationaleHash)
-  };
-}
 
 function parseDecideInput(body: Record<string, unknown>): DecideInput {
   return {
@@ -133,26 +110,18 @@ Bun.serve({
       return Response.json({ public_key: PUBKEY, scheme: 'secp256k1' });
     }
 
-    if (url.pathname === '/sign-action-intent' && req.method === 'POST') {
-      const body = (await req.json()) as Record<string, unknown>;
-      const intent = parseActionIntent(body);
-      const timestampMs = big(body.timestampMs);
-      const { signature } = signActionIntent(intent, timestampMs, PRIV);
-      return Response.json({
-        public_key: PUBKEY,
-        signature,
-        intent: serializeIntent(intent),
-        timestamp_ms: timestampMs.toString()
-      });
-    }
-
+    // The single decision endpoint: market data + intent context in, an optimal,
+    // signed ActionIntent out. The enclave chooses the protocol + amount (the agent
+    // never does), so the on-chain signature attests the DECISION, not just a relay.
     if (url.pathname === '/decide' && req.method === 'POST') {
       const body = (await req.json()) as Record<string, unknown>;
-      const { intent, signature } = decide(parseDecideInput(body), PRIV);
+      const { legs, allocation } = decide(parseDecideInput(body), PRIV);
       return Response.json({
         public_key: PUBKEY,
-        signature,
-        intent: serializeIntent(intent)
+        // One signed intent per funded allocation leg (sequential nonces). Submit them as
+        // commands in a single PTB via the agent's buildVerifiedAllocationTx.
+        legs: legs.map((leg) => ({ intent: serializeIntent(leg.intent), signature: leg.signature })),
+        allocation // the full water-filling result (legs, blended/marginal APR) — the "why"
       });
     }
 

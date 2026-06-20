@@ -51,7 +51,7 @@ source deployments/testnet.env                                # re-source after 
 ```
 
 The scripts ([enclave/scripts/register-enclave.sh](../../enclave/scripts/register-enclave.sh),
-[agent/scripts/live-attested-supply.ts](../../agent/scripts/live-attested-supply.ts)) read
+[agent/scripts/live-attested-decide.ts](../../agent/scripts/live-attested-decide.ts)) read
 these from the environment and error out if any required one is missing — nothing is
 hardcoded in them.
 
@@ -144,19 +144,20 @@ bash scripts/register-enclave.sh
 This only succeeds if the cert chain verifies to the AWS Nitro root **and** the attestation
 PCRs match `EnclaveConfig`. Abort `EInvalidPCRs` = wrong/stale PCRs in step 4.
 
-## Step 6 — Run the attested flow (enclave signs, chain verifies)
+## Step 6 — Run the attested flow (enclave decides + signs, chain verifies)
 
 ```bash
 # All inputs (PKG, ENCLAVE_IP, ENCLAVE, AGENTCAP, ADDR) come from the sourced env.
-cd agent && AMOUNT=50000000 bun scripts/live-attested-supply.ts
+cd agent && bun scripts/live-attested-decide.ts
 ```
 
 It auto-discovers the `DecisionRegistry` (from the publish tx) and `Treasury` (from
-`AgentCap.treasury`), asks the **live enclave** to sign, submits `verified_supply_entry`,
-then runs a tamper test. Expect:
+`AgentCap.treasury`), sends market data to the enclave's single `/decide` endpoint — which
+runs the optimizer **in the TEE**, picks the protocol + amount, and signs that
+`ActionIntent` — then submits `verified_supply_entry` and runs a tamper test. Expect:
 
-- `[1] VALID … success` + a `FundsReleased` event.
-- `[2] TAMPERED rejected` — same signature, bumped amount, fails the on-chain signature check.
+- `verified_supply_entry -> success` + a `FundsReleased` event.
+- `[TAMPER] rejected` — same signature, bumped amount, fails the on-chain signature check.
 
 `AMOUNT` must satisfy the treasury's `per_tx_cap` and remaining `period_cap`, and be ≤
 `funds`. Inspect them with:
@@ -195,7 +196,7 @@ re-register if you redeploy the enclave (new IP → new attestation, but **same*
 ## Completed-run reference
 
 Testnet, 2026-06-21. Helper scripts: `enclave/scripts/{decode-attestation.ts,register-enclave.sh}`,
-`agent/scripts/live-attested-supply.ts`.
+`agent/scripts/live-attested-decide.ts`.
 
 | Object | ID |
 | --- | --- |
