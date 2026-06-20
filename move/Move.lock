@@ -16,8 +16,32 @@ use_environment = "testnet"
 manifest_digest = "7AFB66695545775FBFBB2D3078ADFD084244D5002392E837FDE21D9EA1C6D01C"
 deps = { MoveStdlib = "MoveStdlib" }
 
-[pinned.testnet.treasury_agent]
-source = { root = true }
+[pinned.testnet.navi_interface]
+source = { local = "vendor/navi_interface" }
+use_environment = "testnet"
+manifest_digest = "D7C943BA5D63058B78CC09340C5F28E885FB9D366F924B1FDAA49709E75FB564"
+deps = { navi_oracle = "navi_oracle", std = "MoveStdlib", sui = "Sui" }
+
+[pinned.testnet.navi_oracle]
+source = { local = "vendor/navi_oracle" }
 use_environment = "testnet"
 manifest_digest = "5745706258F61D6CE210904B3E6AE87A73CE9D31A6F93BE4718C442529332A87"
 deps = { std = "MoveStdlib", sui = "Sui" }
+
+[pinned.testnet.scallop_interface]
+source = { local = "vendor/scallop_interface" }
+use_environment = "testnet"
+manifest_digest = "5745706258F61D6CE210904B3E6AE87A73CE9D31A6F93BE4718C442529332A87"
+deps = { std = "MoveStdlib", sui = "Sui" }
+
+[pinned.testnet.suilend_interface]
+source = { local = "vendor/suilend_interface" }
+use_environment = "testnet"
+manifest_digest = "5745706258F61D6CE210904B3E6AE87A73CE9D31A6F93BE4718C442529332A87"
+deps = { std = "MoveStdlib", sui = "Sui" }
+
+[pinned.testnet.treasury_agent]
+source = { root = true }
+use_environment = "testnet"
+manifest_digest = "912DE41700633174BA2310B9E414170D055841E2924CC9603EB0526C1CA58631"
+deps = { navi_interface = "navi_interface", navi_oracle = "navi_oracle", scallop_interface = "scallop_interface", std = "MoveStdlib", sui = "Sui", suilend_interface = "suilend_interface" }

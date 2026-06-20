@@ -1,0 +1,15 @@
+# Build-time interface for NAVI's lending package (`lending_core` modules; mainnet
+# type-origin addr 0xd899cf7d2b5db716bd2cf55599fb0d5ee38a3061e7b6bb6eebf73fa5bc4c81ca,
+# MVR @navi-protocol/lending). Mirrors ONLY the public types + signatures our adapter
+# uses, fetched verbatim from the on-chain ABI (sui_getNormalizedMoveFunction). Bodies
+# `abort` — never published. At mainnet publish, `lending_core` resolves to the real
+# NAVI package.
+[package]
+name = "navi_interface"
+edition = "2024"
+
+[dependencies]
+navi_oracle = { local = "../navi_oracle" }
+
+[addresses]
+lending_core = "0x0"

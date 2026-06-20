@@ -5,9 +5,11 @@ cryptographically verify. The LLM plans and explains; a deterministic layer move
 
 ## Status
 
-The v1 verifiable-execution stack is **built, tested, and demonstrated live on localnet**
-(~48 tests across Move + agent + enclave). Full design: [`docs/treasury-agent-design.md`](docs/treasury-agent-design.md);
-phased build log: [`docs/superpowers/plans/2026-06-20-implementation-roadmap.md`](docs/superpowers/plans/2026-06-20-implementation-roadmap.md).
+The v1 verifiable-execution stack is **built, tested, and demonstrated live on Sui testnet
+with real AWS Nitro attestation** (~48 tests across Move + agent + enclave). Full design:
+[`docs/treasury-agent-design.md`](docs/treasury-agent-design.md); phased build log:
+[`docs/superpowers/plans/2026-06-20-implementation-roadmap.md`](docs/superpowers/plans/2026-06-20-implementation-roadmap.md);
+attestation runbook: [`docs/runbooks/m3-attestation.md`](docs/runbooks/m3-attestation.md).
 
 - **On-chain** (`move/`): non-custodial `Treasury<T>` (typed, revocable caps), the
   signature-gated `verified_supply` / `verified_supply_entry`, receipt custody, the
@@ -16,14 +18,20 @@ phased build log: [`docs/superpowers/plans/2026-06-20-implementation-roadmap.md`
   `ActionIntent` (the *decision* is attested), `@noble`-only for a small PCR.
 - **Agent** (`agent/`): canonical `ActionIntent` codec + the `verified_supply` PTB
   builder — byte-identical BCS across `@mysten/sui` ≡ Move ≡ enclave ≡ agent.
-- **Proven live:** enclave-signed action → on-chain verify → caps → custody; over-cap
-  aborts; a **tampered intent is rejected**; only the owner can withdraw.
-- **Deployed on Sui testnet:** package [`0x79517b…b4396c`](https://suiscan.xyz/testnet/object/0x79517b947e204f8ba6377e9e1ddc26de49145d1f55643875b79e4297b1b4396c)
-  — the full attested `verified_supply` flow runs on a public chain.
+- **Attested on real hardware:** a Nitro enclave on Marlin Oyster generates a secp256k1
+  key **inside the TEE**; `register_enclave` binds its pubkey on-chain after verifying the
+  cert chain to the **AWS Nitro root** + the enclave PCRs — no dev key, no trust in the operator.
+- **Proven live on testnet:** enclave-signed action → on-chain signature verify → caps →
+  receipt custody; over-cap aborts; a **tampered intent is rejected**; only the owner withdraws.
+- **The decision itself is attested:** the agent sends only market data — the enclave runs
+  the optimizer in the TEE, picks venue + amount, and signs. The agent cannot puppet it
+  ([decide tx](https://suiscan.xyz/testnet/tx/CaF2Ng8DsZuxXzZsLFX1HGZY7RmrhbvQ5ssJXZvoUANH)).
+- **On Sui testnet:** package [`0x79517b…b4396c`](https://suiscan.xyz/testnet/object/0x79517b947e204f8ba6377e9e1ddc26de49145d1f55643875b79e4297b1b4396c),
+  attested [`Enclave<DECISION>` `0x425a87be…`](https://suiscan.xyz/testnet/object/0x425a87be07be7a8d9a4efdc58c9a72e0052b528bfabefbcb97754d166c61cef3).
 
-**Pending external infra (not core logic):** the real Suilend adapter (upstream
-Move.toml dep conflict), live Seal (needs key servers), and real Nitro attestation
-(replaces the localnet-only `enclave::register_enclave_dev`).
+**Pending external infra (not core logic):** the real Suilend adapter (upstream Move.toml
+dep conflict) and live Seal (needs key servers). The localnet-only
+`enclave::register_enclave_dev` should be deleted before mainnet now that real attestation works.
 
 ## Layout
 
@@ -50,14 +58,30 @@ bun run move:build && bun run move:test              # on-chain package
 (Use `bun run <script>` from root, not bare `bun test`.) See [`agent/README.md`](agent/README.md)
 for full agent docs and [`move/README.md`](move/README.md) for the on-chain package.
 
-## Reproduce the live attested demo (localnet)
+## Reproduce the live attested demo
+
+### On Sui testnet (real Nitro attestation)
+
+The enclave's key is generated inside a real AWS Nitro enclave on Marlin Oyster and bound
+on-chain — no dev key. The full deploy → attest → register process (build+push the image,
+`oyster-cvm deploy`, decode the `:1301` attestation, `register_enclave`) is in
+[`docs/runbooks/m3-attestation.md`](docs/runbooks/m3-attestation.md). With a registered
+enclave and the object ids recorded in `deployments/testnet.env`:
+
+```bash
+source deployments/testnet.env && cd agent
+bun scripts/live-attested-supply.ts   # enclave signs a hand-built intent; chain verifies; tampered intent rejected
+bun scripts/live-attested-decide.ts   # enclave RUNS THE OPTIMIZER in the TEE + signs its own choice; chain verifies
+```
+
+### On localnet (no hardware)
 
 End-to-end on a throwaway local network: the enclave-signed action is verified on-chain,
 bounds are enforced, the receipt is custodied, and a tampered intent is rejected.
 
 > **Localnet only.** This uses `enclave::register_enclave_dev` (registers an enclave key
 > with **no attestation / no PCR binding**) — it must be removed before testnet/mainnet,
-> where a real Nitro attestation registers the key instead.
+> where a real Nitro attestation registers the key instead (see the testnet path above).
 
 ```bash
 # 1. Start a localnet with a faucet (leave running in its own terminal)

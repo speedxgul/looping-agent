@@ -486,6 +486,13 @@ excluded (address-bound).
 | **M3** | Real Oyster enclave + `register_enclave`; move optimizer in; replace mock signer | #1 can't-swap / can't-extract; attested decision |
 | **M4** | Seal-gated key + weights (`seal_approve` only to the registered PCR) | completes #1: persistent, confidential, fail-closed |
 
+> **Status (2026-06-21):** **M0–M3 complete and proven live on Sui testnet with real
+> Nitro attestation** — the enclave runs on Marlin Oyster, `register_enclave` binds its
+> in-TEE key after on-chain cert-chain + PCR verification, and the enclave both *signs* and
+> *decides* (optimizer in the TEE) actions the chain verifies. M4 (`seal_approve`) is
+> scaffolded + tested; live Seal provisioning and the real Suilend adapter remain. Deploy +
+> attestation runbook: [`runbooks/m3-attestation.md`](runbooks/m3-attestation.md).
+
 ## 15. Lanes
 
 - **Lane A — `move/`:** `verified_supply` + receipt custody; `register_enclave` ↔
@@ -617,9 +624,12 @@ PTB-composed-with-final-assertion fallback (§20 Q4).
 ## 19. Non-goals
 
 Attested backtesting; borrowing/looping for user funds; multi-protocol templates;
-NAVI; full on-chain Nitro cert-chain verification (v1 verifies off-chain at
-registration, stores the pubkey on-chain); a pooled multi-user share vault; a
-trust-console UI.
+NAVI; a pooled multi-user share vault; a trust-console UI.
+
+> Previously a non-goal, now **achieved in v1:** full *on-chain* Nitro cert-chain
+> verification. `register_enclave` parses the attestation with Sui's
+> `nitro_attestation::load_nitro_attestation`, which verifies the COSE signature and the
+> cert chain to the AWS Nitro root on-chain (not just off-chain at registration).
 
 ## 20. Open questions
 

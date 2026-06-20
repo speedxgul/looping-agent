@@ -14,13 +14,29 @@ use sui::coin::Coin;
 use sui::table::{Self, Table};
 use treasury_agent::capability::{Self, AgentCap, Treasury};
 use treasury_agent::mock_supply;
+use treasury_agent::suilend_adapter;
+use suilend::lending_market::LendingMarket;
+use treasury_agent::scallop_adapter;
+use protocol::market::Market;
+use protocol::version::Version;
+use treasury_agent::navi_adapter;
+use lending_core::storage::Storage;
+use lending_core::pool::Pool;
+use lending_core::incentive_v2::Incentive as IncentiveV2;
+use lending_core::incentive_v3::Incentive as IncentiveV3;
 
 /// Domain separator so an enclave signature for one app can't be replayed in another.
 const DECISION_INTENT: u8 = 0;
 /// v1 action_kind: supply.
 const ACTION_SUPPLY: u8 = 0;
-/// Placeholder protocol id (matches mock_supply::PROTOCOL_MOCK). Phase 3b adds Suilend.
+/// Placeholder protocol id (matches mock_supply::PROTOCOL_MOCK).
 const PROTOCOL_MOCK: u8 = 255;
+/// Suilend protocol id (matches suilend_adapter's Suilend protocol id).
+const PROTOCOL_SUILEND: u8 = 0;
+/// Scallop protocol id (matches scallop_adapter's Scallop protocol id).
+const PROTOCOL_SCALLOP: u8 = 1;
+/// NAVI protocol id (matches navi_adapter's NAVI protocol id).
+const PROTOCOL_NAVI: u8 = 2;
 
 #[error]
 const EInvalidSignature: vector<u8> = b"Decision is not signed by the registered enclave";
@@ -134,8 +150,100 @@ public fun verified_supply<C>(
     execute_verified(registry, treasury, cap, intent, clock, ctx);
 }
 
-/// Intent-binding + expiry + replay + bounded release + custody. Package-internal:
-/// reachable only via `verified_supply` (after a verified signature) or from tests.
+/// Suilend variant of `verified_supply`: verify the enclave signature, then execute
+/// against the REAL Suilend adapter. Carries the extra `LendingMarket<P>` +
+/// `reserve_array_index` the protocol call needs — these are NOT part of the signed
+/// intent (the off-chain Submitter supplies them; the intent's `protocol_id` is what
+/// binds the decision to Suilend).
+public fun verified_supply_suilend<P, C>(
+    registry: &mut DecisionRegistry,
+    treasury: &mut Treasury<C>,
+    enclave: &Enclave<DECISION>,
+    cap: &AgentCap<C>,
+    lending_market: &mut LendingMarket<P>,
+    reserve_array_index: u64,
+    intent: ActionIntent,
+    timestamp_ms: u64,
+    signature: vector<u8>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert!(
+        enclave.verify_signature(DECISION_INTENT, timestamp_ms, intent, &signature),
+        EInvalidSignature,
+    );
+    execute_verified_suilend<P, C>(
+        registry, treasury, cap, lending_market, reserve_array_index, intent, clock, ctx,
+    );
+}
+
+/// Scallop variant of `verified_supply`: verify the enclave signature, then execute
+/// against the real Scallop adapter. Adds Scallop's shared `Version` + `Market` args.
+public fun verified_supply_scallop<C>(
+    registry: &mut DecisionRegistry,
+    treasury: &mut Treasury<C>,
+    enclave: &Enclave<DECISION>,
+    cap: &AgentCap<C>,
+    version: &Version,
+    market: &mut Market,
+    intent: ActionIntent,
+    timestamp_ms: u64,
+    signature: vector<u8>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert!(
+        enclave.verify_signature(DECISION_INTENT, timestamp_ms, intent, &signature),
+        EInvalidSignature,
+    );
+    execute_verified_scallop<C>(registry, treasury, cap, version, market, intent, clock, ctx);
+}
+
+/// NAVI variant of `verified_supply`: verify the enclave signature, then execute against
+/// the real NAVI adapter. Adds NAVI's shared `Storage` / `Pool<C>` / `Incentive` (v2+v3)
+/// objects + the asset index.
+public fun verified_supply_navi<C>(
+    registry: &mut DecisionRegistry,
+    treasury: &mut Treasury<C>,
+    enclave: &Enclave<DECISION>,
+    cap: &AgentCap<C>,
+    storage: &mut Storage,
+    pool: &mut Pool<C>,
+    incentive_v2: &mut IncentiveV2,
+    incentive_v3: &mut IncentiveV3,
+    asset: u8,
+    intent: ActionIntent,
+    timestamp_ms: u64,
+    signature: vector<u8>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert!(
+        enclave.verify_signature(DECISION_INTENT, timestamp_ms, intent, &signature),
+        EInvalidSignature,
+    );
+    execute_verified_navi<C>(
+        registry, treasury, cap, storage, pool, incentive_v2, incentive_v3, asset, intent, clock, ctx,
+    );
+}
+
+/// Shared intent checks (binding + expiry + action), protocol-agnostic. Each executor
+/// adds its own `protocol_id` assertion and routes to the matching adapter.
+fun assert_intent_valid<C>(
+    intent: &ActionIntent,
+    treasury: &Treasury<C>,
+    cap: &AgentCap<C>,
+    clock: &Clock,
+) {
+    assert!(intent.treasury_id == object::id(treasury), EWrongTreasuryIntent);
+    assert!(intent.agent_cap_id == object::id(cap), EWrongAgentCap);
+    assert!(intent.expires_at_ms >= clock.timestamp_ms(), EIntentExpired);
+    assert!(intent.action_kind == ACTION_SUPPLY, EUnsupportedAction);
+}
+
+/// Intent-binding + expiry + replay + bounded release + custody (MOCK adapter).
+/// Package-internal: reachable only via `verified_supply` (after a verified signature)
+/// or from tests.
 public(package) fun execute_verified<C>(
     registry: &mut DecisionRegistry,
     treasury: &mut Treasury<C>,
@@ -144,15 +252,103 @@ public(package) fun execute_verified<C>(
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    assert!(intent.treasury_id == object::id(treasury), EWrongTreasuryIntent);
-    assert!(intent.agent_cap_id == object::id(cap), EWrongAgentCap);
-    assert!(intent.expires_at_ms >= clock.timestamp_ms(), EIntentExpired);
-    assert!(intent.action_kind == ACTION_SUPPLY, EUnsupportedAction);
+    assert_intent_valid(&intent, treasury, cap, clock);
     assert!(intent.protocol_id == PROTOCOL_MOCK, EUnsupportedProtocol);
 
     consume_nonce(registry, intent.treasury_id, intent.nonce);
 
     mock_supply::supply_and_custody(treasury, cap, intent.amount, clock, ctx);
+}
+
+/// Same verified pipeline, routing to the REAL Suilend adapter. Package-internal:
+/// reachable only via `verified_supply_suilend` (after a verified signature).
+public(package) fun execute_verified_suilend<P, C>(
+    registry: &mut DecisionRegistry,
+    treasury: &mut Treasury<C>,
+    cap: &AgentCap<C>,
+    lending_market: &mut LendingMarket<P>,
+    reserve_array_index: u64,
+    intent: ActionIntent,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert_intent_valid(&intent, treasury, cap, clock);
+    assert!(intent.protocol_id == PROTOCOL_SUILEND, EUnsupportedProtocol);
+
+    consume_nonce(registry, intent.treasury_id, intent.nonce);
+
+    suilend_adapter::supply_and_custody<P, C>(
+        treasury,
+        cap,
+        lending_market,
+        reserve_array_index,
+        intent.amount,
+        clock,
+        ctx,
+    );
+}
+
+/// Same verified pipeline, routing to the REAL Scallop adapter. Carries Scallop's shared
+/// `Version` + `Market` objects (not part of the signed intent). Package-internal.
+public(package) fun execute_verified_scallop<C>(
+    registry: &mut DecisionRegistry,
+    treasury: &mut Treasury<C>,
+    cap: &AgentCap<C>,
+    version: &Version,
+    market: &mut Market,
+    intent: ActionIntent,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert_intent_valid(&intent, treasury, cap, clock);
+    assert!(intent.protocol_id == PROTOCOL_SCALLOP, EUnsupportedProtocol);
+
+    consume_nonce(registry, intent.treasury_id, intent.nonce);
+
+    scallop_adapter::supply_and_custody<C>(
+        treasury,
+        cap,
+        version,
+        market,
+        intent.amount,
+        clock,
+        ctx,
+    );
+}
+
+/// Same verified pipeline, routing to the REAL NAVI adapter (AccountCap custody). Carries
+/// NAVI's shared `Storage` / `Pool<C>` / `Incentive` (v2+v3) objects + the asset index —
+/// not part of the signed intent. Package-internal.
+public(package) fun execute_verified_navi<C>(
+    registry: &mut DecisionRegistry,
+    treasury: &mut Treasury<C>,
+    cap: &AgentCap<C>,
+    storage: &mut Storage,
+    pool: &mut Pool<C>,
+    incentive_v2: &mut IncentiveV2,
+    incentive_v3: &mut IncentiveV3,
+    asset: u8,
+    intent: ActionIntent,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert_intent_valid(&intent, treasury, cap, clock);
+    assert!(intent.protocol_id == PROTOCOL_NAVI, EUnsupportedProtocol);
+
+    consume_nonce(registry, intent.treasury_id, intent.nonce);
+
+    navi_adapter::supply_and_custody<C>(
+        treasury,
+        cap,
+        storage,
+        pool,
+        incentive_v2,
+        incentive_v3,
+        asset,
+        intent.amount,
+        clock,
+        ctx,
+    );
 }
 
 /// Reconstruct the signed ActionIntent from pure fields (so it can be passed in a PTB).
@@ -225,6 +421,133 @@ public fun verified_supply_entry<C>(
         max_protocol_exposure, policy_hash, input_hash, rationale_hash,
     );
     verified_supply(registry, treasury, enclave, cap, intent, timestamp_ms, signature, clock, ctx);
+}
+
+/// PTB-callable Suilend entry: rebuild the ActionIntent from pure fields, then run the
+/// signature-gated Suilend supply. Same as `verified_supply_entry` plus the
+/// `LendingMarket<P>` + `reserve_array_index` the Suilend call needs. Type args:
+/// `<P (Suilend market type), C (coin)>`.
+public fun verified_supply_suilend_entry<P, C>(
+    registry: &mut DecisionRegistry,
+    treasury: &mut Treasury<C>,
+    enclave: &Enclave<DECISION>,
+    cap: &AgentCap<C>,
+    lending_market: &mut LendingMarket<P>,
+    reserve_array_index: u64,
+    schema_version: u16,
+    chain_id: vector<u8>,
+    treasury_id: address,
+    agent_cap_id: address,
+    nonce: u64,
+    expires_at_ms: u64,
+    action_kind: u8,
+    protocol_id: u8,
+    asset_type: vector<u8>,
+    amount: u64,
+    min_health_factor_bps: u64,
+    max_protocol_exposure: u64,
+    policy_hash: vector<u8>,
+    input_hash: vector<u8>,
+    rationale_hash: vector<u8>,
+    timestamp_ms: u64,
+    signature: vector<u8>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    let intent = build_intent(
+        schema_version, chain_id, treasury_id, agent_cap_id, nonce, expires_at_ms,
+        action_kind, protocol_id, asset_type, amount, min_health_factor_bps,
+        max_protocol_exposure, policy_hash, input_hash, rationale_hash,
+    );
+    verified_supply_suilend<P, C>(
+        registry, treasury, enclave, cap, lending_market, reserve_array_index,
+        intent, timestamp_ms, signature, clock, ctx,
+    );
+}
+
+/// PTB-callable Scallop entry: rebuild the ActionIntent, then run the signature-gated
+/// Scallop supply. Same as `verified_supply_entry` plus Scallop's shared `Version` +
+/// `Market` objects. Type arg: `<C (coin)>`.
+public fun verified_supply_scallop_entry<C>(
+    registry: &mut DecisionRegistry,
+    treasury: &mut Treasury<C>,
+    enclave: &Enclave<DECISION>,
+    cap: &AgentCap<C>,
+    version: &Version,
+    market: &mut Market,
+    schema_version: u16,
+    chain_id: vector<u8>,
+    treasury_id: address,
+    agent_cap_id: address,
+    nonce: u64,
+    expires_at_ms: u64,
+    action_kind: u8,
+    protocol_id: u8,
+    asset_type: vector<u8>,
+    amount: u64,
+    min_health_factor_bps: u64,
+    max_protocol_exposure: u64,
+    policy_hash: vector<u8>,
+    input_hash: vector<u8>,
+    rationale_hash: vector<u8>,
+    timestamp_ms: u64,
+    signature: vector<u8>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    let intent = build_intent(
+        schema_version, chain_id, treasury_id, agent_cap_id, nonce, expires_at_ms,
+        action_kind, protocol_id, asset_type, amount, min_health_factor_bps,
+        max_protocol_exposure, policy_hash, input_hash, rationale_hash,
+    );
+    verified_supply_scallop<C>(
+        registry, treasury, enclave, cap, version, market,
+        intent, timestamp_ms, signature, clock, ctx,
+    );
+}
+
+/// PTB-callable NAVI entry: rebuild the ActionIntent, then run the signature-gated NAVI
+/// supply. Same as `verified_supply_entry` plus NAVI's shared `Storage` / `Pool<C>` /
+/// `Incentive` (v2+v3) objects + the asset index. Type arg: `<C (coin)>`.
+public fun verified_supply_navi_entry<C>(
+    registry: &mut DecisionRegistry,
+    treasury: &mut Treasury<C>,
+    enclave: &Enclave<DECISION>,
+    cap: &AgentCap<C>,
+    storage: &mut Storage,
+    pool: &mut Pool<C>,
+    incentive_v2: &mut IncentiveV2,
+    incentive_v3: &mut IncentiveV3,
+    asset: u8,
+    schema_version: u16,
+    chain_id: vector<u8>,
+    treasury_id: address,
+    agent_cap_id: address,
+    nonce: u64,
+    expires_at_ms: u64,
+    action_kind: u8,
+    protocol_id: u8,
+    asset_type: vector<u8>,
+    amount: u64,
+    min_health_factor_bps: u64,
+    max_protocol_exposure: u64,
+    policy_hash: vector<u8>,
+    input_hash: vector<u8>,
+    rationale_hash: vector<u8>,
+    timestamp_ms: u64,
+    signature: vector<u8>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    let intent = build_intent(
+        schema_version, chain_id, treasury_id, agent_cap_id, nonce, expires_at_ms,
+        action_kind, protocol_id, asset_type, amount, min_health_factor_bps,
+        max_protocol_exposure, policy_hash, input_hash, rationale_hash,
+    );
+    verified_supply_navi<C>(
+        registry, treasury, enclave, cap, storage, pool, incentive_v2, incentive_v3, asset,
+        intent, timestamp_ms, signature, clock, ctx,
+    );
 }
 
 /// Reject a replayed or stale nonce, then record it as the latest for the treasury.

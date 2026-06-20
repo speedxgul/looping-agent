@@ -3,6 +3,14 @@ name = "treasury_agent"
 edition = "2024"
 
 [dependencies]
+# Build-time interface for Suilend (@suilend/core). Local stub mirroring Suilend's exact
+# public signatures so `suilend_adapter.move` compiles against the real API without
+# dragging Suilend's unbuildable source (dead framework rev) or Pyth/Wormhole/Switchboard.
+# See vendor/suilend_interface/Move.toml. Mainnet publish swaps this for the real package.
+suilend_interface = { local = "vendor/suilend_interface" }
+scallop_interface = { local = "vendor/scallop_interface" }
+navi_interface = { local = "vendor/navi_interface" }
+navi_oracle = { local = "vendor/navi_oracle" }
 
 # Two named addresses in one package: our app (treasury_agent) + the vendored
 # Nautilus/Oyster enclave library (enclave). Both publish at the same package id.

@@ -1,0 +1,17 @@
+# Minimal BUILD-TIME interface for Suilend's on-chain package (@suilend/core,
+# mainnet pkg 0xe53906c2c058d1e369763114418f3c144d1b74960d29b2785718a782fec09b61).
+#
+# Why a local interface instead of depending on Suilend's source: Suilend's published
+# Move.lock pins a MystenLabs/sui framework rev that GitHub no longer serves ("not our
+# ref"), and its source drags Pyth/Wormhole/Switchboard oracle infra we don't call. This
+# package mirrors ONLY the public signatures our adapter uses, so `suilend_adapter.move`
+# compiles + type-checks against Suilend's exact API. It is never published — at mainnet
+# publish the `suilend` address resolves to the real package (or swap our dep for
+# `suilend = { r.mvr = "@suilend/core" }`). Signatures verified against the real source
+# (github.com/solendprotocol/suilend, contracts/suilend/sources/lending_market.move).
+[package]
+name = "suilend_interface"
+edition = "2024"
+
+[addresses]
+suilend = "0x0"
