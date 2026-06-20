@@ -9,3 +9,4 @@ move/build/
 keeping-progress-track.txt
 derive-key.ts
 .cursor
+data/*.json

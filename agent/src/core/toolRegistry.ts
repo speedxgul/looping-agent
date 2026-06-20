@@ -268,7 +268,7 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
 
     get_best_supply_target: async () => getBestSupplyTarget(config, clients),
 
-    get_optimal_allocation: async () => getOptimalAllocation(config, clients, memory),
+    get_optimal_allocation: async () => getOptimalAllocation(config, clients, memory, logger),
 
     get_lending_positions: async (args) => {
       if (!config.sui.enabled) {
@@ -597,7 +597,8 @@ async function getBestSupplyTarget(config: AppConfig, clients: Clients): Promise
 async function getOptimalAllocation(
   config: AppConfig,
   clients: Clients,
-  memory: AgentMemoryContext
+  memory: AgentMemoryContext,
+  logger: Logger
 ): Promise<Record<string, unknown>> {
   if (!config.sui.enabled) {
     return { ok: false, error: 'Sui lending is disabled' };
@@ -654,6 +655,17 @@ async function getOptimalAllocation(
     };
   }
 
+  logger.info('Allocation candidates', {
+    asset: usdcAsset,
+    budgetRaw: budgetRaw.toString(),
+    candidates: curves.map((c) => ({
+      protocol: c.protocol,
+      spotNetApr: round4(netSupplyApr(c, 0n)),
+      rewardSupplyApr: c.rewardSupplyApr
+    })),
+    ...(skipped.length > 0 ? { skipped } : {})
+  });
+
   const allocation = solveAllocation({
     curves,
     budgetRaw,
@@ -690,6 +702,31 @@ async function getOptimalAllocation(
 
   const improvementBps =
     naive && budgetRaw > 0n ? Math.round((allocation.blendedNetApr - naive.netAprIfAllHere) * 100) : 0;
+
+  logger.info('Water-fill allocation', {
+    asset: usdcAsset,
+    budgetRaw: budgetRaw.toString(),
+    legs: legs.map((l) => ({
+      protocol: l.protocol,
+      rawAmount: l.rawAmount,
+      amountFormatted: l.amountFormatted,
+      netSupplyApr: l.netSupplyApr,
+      share: l.share
+    })),
+    blendedNetApr: allocation.blendedNetApr,
+    marginalApr: allocation.marginalApr,
+    allocatedRaw: allocation.allocatedRaw,
+    unallocatedRaw: allocation.unallocatedRaw
+  });
+
+  logger.info('Allocation decision', {
+    funded: legs.map((l) => l.protocol),
+    // At small budgets the dust-prune collapses the split to the single best-APR
+    // pool; this flag makes that explicit on the terminal.
+    winnerTakesAll: legs.length === 1,
+    improvementBpsVsNaive: improvementBps,
+    naive
+  });
 
   return {
     ok: true,
