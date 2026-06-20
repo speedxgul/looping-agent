@@ -82,8 +82,9 @@ async function main() {
   console.log('submitter (gas payer):', active);
   console.log('treasury funds before:', await treasuryFunds());
 
-  // 1) VALID: enclave-signed ActionIntent (amount 50 SUI, nonce 1)
-  const good = makeIntent(50_000_000_000n, 1n);
+  // 1) VALID: enclave-signed ActionIntent (amount from AMOUNT env, default 50 SUI)
+  const AMOUNT = BigInt(process.env.AMOUNT ?? '50000000000');
+  const good = makeIntent(AMOUNT, 1n);
   const goodSig = signActionIntent(good, TS, DEV_PRIV);
   const txGood = buildVerifiedSupplyTx(refs, good, TS, goodSig);
   const rGood = await client.signAndExecuteTransaction({
@@ -93,10 +94,10 @@ async function main() {
   });
   console.log('\n[1] VALID verified_supply_entry ->', rGood.effects?.status);
   for (const e of rGood.events ?? []) console.log('    event:', e.type.split('::').pop(), e.parsedJson);
-  console.log('    treasury funds after:', await treasuryFunds(), '(expect 150000000000)');
+  console.log('    treasury funds after:', await treasuryFunds(), `(supplied ${AMOUNT})`);
 
   // 2) TAMPERED: same signature, but amount changed to 60 SUI -> signature must fail
-  const tampered = makeIntent(60_000_000_000n, 2n);
+  const tampered = makeIntent(AMOUNT + 10_000_000n, 2n);
   const txBad = buildVerifiedSupplyTx(refs, tampered, TS, goodSig); // reuse the VALID sig
   try {
     const rBad = await client.signAndExecuteTransaction({

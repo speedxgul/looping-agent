@@ -9,3 +9,8 @@ edition = "2024"
 [addresses]
 treasury_agent = "0x0"
 enclave = "0x0"
+
+# Chain ids for the new-style publish flow.
+[environments]
+testnet = "4c78adac"
+localnet = "0c91dfe0"

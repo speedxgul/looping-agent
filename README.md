@@ -18,6 +18,8 @@ phased build log: [`docs/superpowers/plans/2026-06-20-implementation-roadmap.md`
   builder — byte-identical BCS across `@mysten/sui` ≡ Move ≡ enclave ≡ agent.
 - **Proven live:** enclave-signed action → on-chain verify → caps → custody; over-cap
   aborts; a **tampered intent is rejected**; only the owner can withdraw.
+- **Deployed on Sui testnet:** package [`0x79517b…b4396c`](https://suiscan.xyz/testnet/object/0x79517b947e204f8ba6377e9e1ddc26de49145d1f55643875b79e4297b1b4396c)
+  — the full attested `verified_supply` flow runs on a public chain.
 
 **Pending external infra (not core logic):** the real Suilend adapter (upstream
 Move.toml dep conflict), live Seal (needs key servers), and real Nitro attestation
