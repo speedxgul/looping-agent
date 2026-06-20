@@ -303,7 +303,7 @@ flowchart TB
     Sub == "3 · verified_supply(intent, sig, AgentCap)" ==> Dec
     EncReg -. "pk for verify" .-> Dec
     Dec -- "4 · sig + nonce ok" --> Cap
-    Cap -- "5 · deposit; receipt → Treasury" --> Pool
+    Cap -- "5 · deposit + receipt → Treasury" --> Pool
     Cap -- "6 · emit ActionExecuted" --> Monitor
 
     classDef tee fill:#1f2937,stroke:#10b981,color:#fff;
@@ -326,6 +326,7 @@ sequenceDiagram
     participant Enc as 🔒 Enclave
     participant EncReg as enclave.move
     participant Cap as capability.move
+    participant Sub as Submitter
 
     Note over Enc,Oyster: deploy reproducible image → fixed PCR
     Owner->>Oyster: deploy enclave image
@@ -336,9 +337,9 @@ sequenceDiagram
     Owner->>EncReg: register_enclave(attestation document)
     Note over EncReg: asserts document PCRs == config PCRs<br/>→ stores the pk, bound to this exact code
 
-    Owner->>Cap: create Treasury<USDC>, deposit, set caps + expiry
+    Owner->>Cap: create USDC Treasury, deposit, set caps + expiry
     Cap-->>Owner: OwnerCap (custody · revoke · withdraw)
-    Cap-->>Submitter: AgentCap (scoped; useless without a signed intent)
+    Cap-->>Sub: AgentCap (scoped, useless without a signed intent)
 ```
 
 The key step is `register_enclave`: it **rejects any public key whose PCRs don't
