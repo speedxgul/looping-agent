@@ -52,6 +52,15 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         scallop: { enabled: false, write: false }
       }
     },
+    treasury: {
+      enabled: false,
+      packageId: '',
+      treasuryId: '',
+      agentCapId: '',
+      registryId: '',
+      enclaveId: '',
+      enclaveUrl: ''
+    },
     walrus: {
       memoryBackend: 'file',
       publisherUrl: 'https://publisher.walrus-testnet.walrus.space',

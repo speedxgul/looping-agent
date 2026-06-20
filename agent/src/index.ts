@@ -1,7 +1,9 @@
+import { SuiClient } from '@mysten/sui/client';
 import { NaviClient } from './clients/chain/naviClient.js';
 import { ScallopClient } from './clients/chain/scallopClient.js';
 import { SuiExecutionClient } from './clients/chain/suiExecutionClient.js';
 import { SuilendClient } from './clients/chain/suilendClient.js';
+import { TreasuryClient } from './clients/chain/treasuryClient.js';
 import { OpenAIResponsesClient } from './clients/http/openaiResponsesClient.js';
 import { XClient } from './clients/http/xClient.js';
 import { WalrusBlobClient } from './clients/storage/walrusBlobClient.js';
@@ -45,6 +47,17 @@ async function main() {
       config,
       logger
     }),
+    // Non-custodial path: present only when treasury mode is configured. The agent reads
+    // the vault budget + custodied positions and relays enclave-signed allocations.
+    treasury:
+      config.treasury.enabled && config.treasury.treasuryId
+        ? new TreasuryClient({
+            suiClient: new SuiClient({ url: config.sui.rpcUrl, network: config.sui.network }),
+            treasuryId: config.treasury.treasuryId,
+            agentCapId: config.treasury.agentCapId,
+            enclaveUrl: config.treasury.enclaveUrl
+          })
+        : null,
     openai: new OpenAIResponsesClient({
       apiKey: config.openai.apiKey,
       baseUrl: config.openai.baseUrl,

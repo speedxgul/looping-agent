@@ -70,8 +70,10 @@ enclave and the object ids recorded in `deployments/testnet.env`:
 
 ```bash
 source deployments/testnet.env && cd agent
-bun scripts/live-attested-supply.ts   # enclave signs a hand-built intent; chain verifies; tampered intent rejected
-bun scripts/live-attested-decide.ts   # enclave RUNS THE OPTIMIZER in the TEE + signs its own choice; chain verifies
+# Single endpoint: the enclave runs the optimizer in the TEE, picks the protocol + amount,
+# and signs that ActionIntent. The agent only relays it; the chain verifies; a tampered
+# intent (same signature, bumped amount) is rejected.
+bun scripts/live-attested-decide.ts
 ```
 
 ### On localnet (no hardware)

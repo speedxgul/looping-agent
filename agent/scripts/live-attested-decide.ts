@@ -170,15 +170,21 @@ async function main() {
     intent: toIntent(l.intent),
     signatureHex: l.signature
   }));
-  console.log(`ENCLAVE DECISION (made in the TEE): ${legs.length} leg(s), budget ${BUDGET}, per_tx_cap ${perTxCap}`);
+  console.log(
+    `ENCLAVE DECISION (made in the TEE): ${legs.length} leg(s), budget ${BUDGET}, per_tx_cap ${perTxCap}`
+  );
   for (const leg of legs) {
-    console.log(`  protocol_id ${leg.intent.protocolId}  amount ${leg.intent.amount}  nonce ${leg.intent.nonce}`);
+    console.log(
+      `  protocol_id ${leg.intent.protocolId}  amount ${leg.intent.amount}  nonce ${leg.intent.nonce}`
+    );
   }
 
   // On testnet only the mock adapter (255) is deployed; a real multi-protocol split can
   // only execute live on mainnet (Suilend/Scallop/NAVI exist there).
   if (!legs.every((l) => l.intent.protocolId === 255)) {
-    console.log('\nSome legs target protocols with no testnet adapter; only mock (255) executes here. Skipping submit.');
+    console.log(
+      '\nSome legs target protocols with no testnet adapter; only mock (255) executes here. Skipping submit.'
+    );
     return;
   }
 
@@ -209,7 +215,11 @@ async function main() {
   );
   const txBad = buildVerifiedAllocationTx(tamperedLegs, { mock: refs }, TS);
   try {
-    const rBad = await client.signAndExecuteTransaction({ signer, transaction: txBad, options: { showEffects: true } });
+    const rBad = await client.signAndExecuteTransaction({
+      signer,
+      transaction: txBad,
+      options: { showEffects: true }
+    });
     console.log('\n[TAMPER] ->', rBad.effects?.status, '(SHOULD be failure)');
   } catch (err) {
     console.log('\n[TAMPER] rejected as expected:', String(err).split('\n')[0].slice(0, 150));

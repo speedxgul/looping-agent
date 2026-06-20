@@ -31,6 +31,7 @@ import {
 import { netSupplyApr, type ReserveCurve, solveAllocation } from './allocation.js';
 import type { SaveOptions } from './memoryStore.js';
 import { evaluateActionPolicy } from './policy.js';
+import { treasuryToolDefinitions, treasuryToolHandlers } from './treasuryTools.js';
 
 const PROTOCOLS: LendingProtocol[] = ['suilend', 'navi', 'scallop'];
 
@@ -343,8 +344,16 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
     }
   };
 
+  // Non-custodial path: register the treasury tools (and expose their schemas) only when
+  // TREASURY_MODE is on. The wallet tools above stay registered, so the two modes coexist.
+  const treasuryEnabled = config.treasury.enabled && clients.treasury !== null;
+  if (treasuryEnabled) {
+    Object.assign(handlers, treasuryToolHandlers({ config, clients, logger }));
+  }
+
   return {
-    definitions,
+    definitions: (): OpenAIToolDefinition[] =>
+      treasuryEnabled ? [...definitions(), ...treasuryToolDefinitions()] : definitions(),
     async execute(toolCall: OpenAIFunctionCallItem): Promise<Record<string, unknown>> {
       const handler = handlers[toolCall.name];
       if (!handler) {

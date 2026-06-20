@@ -80,6 +80,15 @@ export function loadConfig(): AppConfig {
         }
       }
     },
+    treasury: {
+      enabled: readBoolean('TREASURY_MODE', false),
+      packageId: readString('TREASURY_PACKAGE_ID', ''),
+      treasuryId: readString('TREASURY_ID', ''),
+      agentCapId: readString('TREASURY_AGENT_CAP_ID', ''),
+      registryId: readString('TREASURY_REGISTRY_ID', ''),
+      enclaveId: readString('TREASURY_ENCLAVE_OBJECT_ID', ''),
+      enclaveUrl: readString('TREASURY_ENCLAVE_URL', '')
+    },
     walrus: {
       memoryBackend: readMemoryBackend('AGENT_MEMORY_BACKEND', 'file'),
       publisherUrl: readString('WALRUS_PUBLISHER_URL', 'https://publisher.walrus-testnet.walrus.space'),

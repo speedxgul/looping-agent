@@ -2,6 +2,7 @@ import type { NaviClient } from './clients/chain/naviClient.js';
 import type { ScallopClient } from './clients/chain/scallopClient.js';
 import type { SuiExecutionClient } from './clients/chain/suiExecutionClient.js';
 import type { SuilendClient } from './clients/chain/suilendClient.js';
+import type { TreasuryClient } from './clients/chain/treasuryClient.js';
 import type { OpenAIResponsesClient } from './clients/http/openaiResponsesClient.js';
 import type { XClient } from './clients/http/xClient.js';
 import type { WalrusBlobClient } from './clients/storage/walrusBlobClient.js';
@@ -87,6 +88,23 @@ export interface AppConfig {
       namespace: string;
     };
   };
+  /**
+   * Non-custodial treasury mode. When `enabled`, the agent acts only as Submitter:
+   * funds live in the on-chain `Treasury`, the enclave decides + signs allocations, and
+   * the agent relays them via the attested `verified_supply_*` path (instead of moving
+   * its own wallet funds). Object ids come from `deployments/<network>.env`.
+   */
+  treasury: {
+    enabled: boolean;
+    packageId: string;
+    treasuryId: string;
+    agentCapId: string;
+    /** Shared `DecisionRegistry` object id. */
+    registryId: string;
+    /** Shared attested `Enclave<DECISION>` object id. */
+    enclaveId: string;
+    enclaveUrl: string;
+  };
 }
 
 export interface Clients {
@@ -94,6 +112,8 @@ export interface Clients {
   suilend: SuilendClient;
   navi: NaviClient;
   scallop: ScallopClient;
+  /** Present only when treasury mode is enabled (non-custodial path). */
+  treasury: TreasuryClient | null;
   openai: OpenAIResponsesClient;
   x: XClient;
   walrusBlob: WalrusBlobClient;
