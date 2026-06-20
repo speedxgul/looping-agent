@@ -10,6 +10,7 @@
     "typecheck": "cd agent && bun run typecheck",
     "check": "cd agent && bun run check",
     "check:fix": "cd agent && bun run check:fix",
+    "gen:decision-vectors": "cd agent && bun run gen:decision-vectors",
     "move:build": "cd move && sui move build",
     "move:test": "cd move && sui move test"
   }

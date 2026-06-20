@@ -64,7 +64,21 @@ oyster-cvm verify --enclave-ip <ENCLAVE_IP> --image-id <IMAGE_ID>
 # 3. Talk to the real enclave (its key is generated INSIDE the TEE):
 curl -s http://<ENCLAVE_IP>:8080/public-key
 curl -s -X POST http://<ENCLAVE_IP>:8080/sign-decision -H 'content-type: application/json' \
-  -d '{"treasury":"0x<treasury_id>","amount":1000,"nonce":1}'
+  -d '{
+    "treasury":"0x<treasury_id>",
+    "agent_cap":"0x<agent_cap_id>",
+    "nonce":"1",
+    "expires_at_ms":"1800000000000",
+    "protocol_id":2,
+    "coin_type_hash":"0x<32-byte-coin-type-hash>",
+    "amount":"1000",
+    "min_health_factor_bps":"12500",
+    "max_protocol_exposure":"100000",
+    "policy_hash":"0x<32-byte-policy-hash>",
+    "input_hash":"0x<32-byte-input-hash>",
+    "report_hash":"0x<32-byte-report-hash>",
+    "intent_hash":"0x<32-byte-intent-hash>"
+  }'
 ```
 
 `verify` confirms the running PCRs match `oyster-cvm build` ("the code running is the code I
@@ -86,17 +100,20 @@ cd ../move && sui client publish
 # → shared Enclave<DECISION> object whose pk() the verifier checks per decision
 ```
 
-After that, `decision::execute_decision` accepts a `/sign-decision` signature and releases
-bounded funds via `capability::release_for_action`. (Adapt the demo's
+After that, `decision::execute_verified_supply_handoff` accepts a `/sign-decision`
+signature and releases bounded funds via `capability::release_for_action`. The v1
+Move endpoint is a verified handoff boundary: the PTB must immediately route the
+returned coin into the intended protocol supply call. (Adapt the demo's
 [`register_enclave.sh`](https://github.com/marlinprotocol/sui-oyster-demo/blob/main/contracts/script/register_enclave.sh)
 for the exact CLI calls.)
 
 ## What's proven vs. what's left
 
-- ✅ Local: enclave service signs a decision → Sui `decision.move` verifies the exact signature
-  → would release bounded funds (BCS parity self-guarded). See `move/sources/decision.move`.
+- ✅ Local: enclave service signs an `ActionIntent` → Sui `decision.move` verifies the exact
+  signature → releases bounded funds only after nonce/protocol/action checks (BCS parity
+  self-guarded). See `move/sources/decision.move`.
 - ⏭️ Cloud (needs Docker + funded wallets): deploy the signer to Oyster, publish + register the
-  `move/` package, and have the agent submit `execute_decision` in a PTB.
+  `move/` package, and have the agent submit `execute_verified_supply_handoff` in a PTB.
 
 Docs: [Oyster quickstart](https://docs.marlin.org/oyster/build-cvm/quickstart) ·
 [verify attestations](https://docs.marlin.org/oyster/build-cvm/guides/verify-attestations-oyster-cvm) ·

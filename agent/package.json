@@ -12,6 +12,7 @@
     "account:address": "bun src/index.ts account:address",
     "doctor": "bun src/index.ts doctor",
     "rates": "bun scripts/check-suilend-rates.ts",
+    "gen:decision-vectors": "bun scripts/gen-decision-vectors.ts",
     "verify:allocation": "bun scripts/verify-allocation.ts",
     "memwal:keygen": "bun scripts/memwal-keygen.ts",
     "test": "bun test",

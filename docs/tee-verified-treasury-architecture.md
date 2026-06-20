@@ -451,23 +451,24 @@ of truth for fund movement.
 
 ### Phase 1: Non-Custodial Treasury
 
-- Finish `capability.move` tests.
+- Finish `capability.move` tests. **Implemented locally.**
 - Deploy `Treasury<USDC>` on testnet.
 - Add scripts for create, deposit, revoke, withdraw.
 - Demonstrate owner revocation.
 
 ### Phase 2: Verified Action Templates
 
-- Add `verifier.move`.
-- Remove reliance on generic raw coin release for user funds.
-- Add a v1 approved action: supply USDC to one protocol.
-- Add nonce and receipt events.
+- Add `decision.move` enclave signature verification. **Implemented locally.**
+- Add canonical `ActionIntent` BCS and signed-vector tests. **Implemented locally.**
+- Add nonce and receipt events. **Implemented locally.**
+- Replace the current verified handoff with a direct protocol adapter once the exact
+  protocol Move call surface is pinned.
 
 ### Phase 3: Mock Enclave Signer
 
-- Add canonical `ActionIntent` serialization in TS.
-- Add local mock signer with the same API as the future enclave.
-- Add Move signature verification against registered mock public key.
+- Add canonical `ActionIntent` serialization in TS. **Implemented locally.**
+- Add local signer with the same API as the future enclave. **Implemented locally.**
+- Add Move signature verification against registered public key. **Implemented locally.**
 - Run full testnet flow with tiny funds.
 
 ### Phase 4: Real TEE Registration
