@@ -569,6 +569,7 @@ minimum health factor for any borrow-capable action · emergency unwind.
 
 **Deferred:** live borrowing for user funds · recursive looping · CLMM LP ·
 cross-asset swaps beyond approved stablecoin routing · NAVI (address-bound).
+*(Forward path for leverage and these protocols: §20 Extensibility.)*
 
 ---
 
@@ -605,7 +606,8 @@ multi-user share vault; a trust-console UI.
 
 1. **Attestation depth.** v1 verifies attestation off-chain and registers the
    pubkey on-chain; the hardened path verifies the full cert chain on-chain. Locked
-   as v1; revisit for production (schema is unchanged either way).
+   as v1; revisit for production (schema is unchanged either way). *(Leverage and
+   protocol-coverage paths are detailed in §20 Extensibility.)*
 2. **Vault shape.** Per-user `Treasury<USDC>` (locked for v1) vs. a pooled
    per-user-share vault (deferred product decision).
 3. **First protocol.** Decided by the **M0 spike**.
@@ -618,7 +620,124 @@ multi-user share vault; a trust-console UI.
 
 ---
 
-## 20. The pitch
+## 20. Extensibility — leverage & more protocols
+
+Two questions decide whether this is a one-trick demo or a real platform: *can it
+do leveraged strategies?* and *can it add protocols?* **Neither breaks the
+architecture.** Both are deferred past v1 for honest, specific reasons — not
+because the model can't express them. This section is the forward path.
+
+### 20.1 Looping / leverage (supply → borrow → re-supply)
+
+**Custody is not the new problem.** A leveraged loop is still *one* position — on
+Suilend, one `Obligation`, hence one `ObligationOwnerCap`. The Treasury holds that
+single cap; the entire loop happens *inside* that obligation; withdrawal stays
+gated by the cap. So receipt custody covers leverage unchanged.
+
+Leverage adds exactly two new requirements:
+
+**(a) On-chain health enforcement becomes mandatory.** Supplying carries no
+liquidation risk; borrowing does. So the verifier can no longer check only "amount
+within cap" — it must read the obligation's resulting **health factor** and assert
+it is ≥ `min_health_factor_bps` (a field the `ActionIntent` already carries). This
+means Move must *re-derive* health from on-chain state, not trust the enclave's
+number. That extra on-chain verification — not custody — is the real cost, and the
+reason borrow-capable actions are gated behind it.
+
+**(b) The loop must be one atomic action.** The borrowed coin can never become a
+free PTB value (that would reopen the diversion hole `verified_supply` closes). So
+a loop is a single new template — `verified_loop` (a new `action_kind`) — that does
+supply → borrow → re-supply *inside one Move call*:
+
+```mermaid
+flowchart LR
+    T[("Treasury<br/>funds")] --> S1["supply<br/>collateral"]
+    S1 --> B["borrow<br/>against it"]
+    B --> S2["re-supply<br/>borrowed coin"]
+    S2 -. "repeat ≤ max_loops" .-> B
+    S2 --> H{"health factor<br/>≥ floor?"}
+    H -- yes --> OK["commit ·<br/>receipt(s) → Treasury"]
+    H -- no --> AB["⛔ abort<br/>whole tx"]
+    classDef good fill:#064e3b,stroke:#10b981,color:#fff;
+    classDef bad fill:#3f1d1d,stroke:#f87171,color:#fff;
+    class OK good;
+    class AB bad;
+```
+
+It also needs an **emergency-unwind / deleverage path** (owner-triggered, or a
+permissionless keeper when health drops below the floor) — already listed as a
+v1.5 control.
+
+**The honest caveat (state it in the pitch):** leverage lets the agent *lose*
+money within bounds — a liquidation is an *authorized* outcome. The crypto
+guarantees are about **custody, not strategy safety**: the agent still cannot steal
+your funds, but a leveraged position can be liquidated. The owner's protection
+against bad leverage is the on-chain health floor + caps + revoke, not "no losses."
+
+### 20.2 More protocols — the adapter pattern
+
+Each protocol plugs in as an **adapter** behind one interface, dispatched by the
+`protocol_id` already in the `ActionIntent` and the allow-list:
+
+```text
+deposit(funds)       -> receipt        // stored in the Treasury
+withdraw(receipt)    -> funds          // gated by the custodied receipt
+read_health(position)-> hf             // for borrow-capable actions
+```
+
+```mermaid
+flowchart TB
+    VI["verified action<br/>(protocol_id · action_kind)"] --> D{"dispatch by<br/>protocol_id"}
+    D -->|Suilend| A1["Suilend adapter<br/>receipt: ObligationOwnerCap"]
+    D -->|Scallop| A2["Scallop adapter<br/>receipt: sCoin"]
+    D -->|NAVI| A3["NAVI adapter<br/>receipt: AccountCap (sub-account)"]
+    A1 --> R[("Treasury custodies<br/>the receipt set")]
+    A2 --> R
+    A3 --> R
+    classDef chain fill:#0b3d91,stroke:#60a5fa,color:#fff;
+    class R chain;
+```
+
+**The compatibility rule.** A protocol is non-custodial-compatible **iff it exposes
+a transferable receipt or capability that gates withdrawal, which the Treasury can
+hold:**
+
+| Protocol | Receipt | Non-custodial? |
+|---|---|---|
+| Suilend | `ObligationOwnerCap` | ✅ Treasury holds the cap |
+| Scallop | `sCoin` | ✅ Treasury holds the token |
+| **NAVI** (default flow) | none — address-bound | ❌ as the current code uses it |
+| **NAVI** (via `AccountCap`) | sub-account `AccountCap` | ✅ *if* we deposit under a Treasury-held `AccountCap` |
+
+So **NAVI is supportable** — but only by switching from today's address-bound
+deposit (`naviClient.ts`) to its `AccountCap` sub-account model, where the Treasury
+custodies the `AccountCap`. The exact shape of that path needs confirming in a spike
+before we promise it.
+
+Two consequences:
+
+- **Multi-protocol doesn't break custody.** The Treasury holds a *set* of receipts
+  (dynamic fields keyed by position); withdrawal routes per-receipt.
+- **Each adapter is a real per-protocol integration.** The strong "Move calls the
+  protocol directly" path needs a cross-package Move dependency with callable entry
+  functions. For protocols whose Move we can't cleanly import, the fallback is the
+  PTB-composed-with-final-assertion path (§19 Q4): release → SDK composes the
+  deposit directing the receipt to the Treasury → a final Move call asserts the
+  Treasury now owns the expected receipt. Weaker, but it widens coverage.
+
+### 20.3 Roadmap placement
+
+| Capability | Stage | Gating work |
+|---|---|---|
+| Single-protocol supply (Suilend **or** Scallop) | **v1** | M0–M3 |
+| Second supply protocol | v1.5 | one more adapter |
+| NAVI support | v1.5 | `AccountCap` integration + spike |
+| Looping / leverage | v2 | on-chain health enforcement + `verified_loop` + unwind keeper |
+| CLMM LP, cross-asset routing | v2+ | new receipt types + price-impact bounds |
+
+---
+
+## 21. The pitch
 
 - **Verifiable autonomy.** *"Every action is signed by attested hardware,
   re-verified on-chain, and bounded by your mandate. Proof, not trust."*
