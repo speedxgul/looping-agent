@@ -13,6 +13,7 @@ module treasury_agent::capability;
 use sui::balance::Balance;
 use sui::clock::Clock;
 use sui::coin::Coin;
+use sui::dynamic_object_field as dof;
 use sui::event;
 
 // === Errors ===
@@ -27,6 +28,10 @@ const ECapabilityExpired: vector<u8> = b"AgentCap has expired";
 const EExceedsPerTxCap: vector<u8> = b"Amount exceeds the per-transaction cap";
 #[error]
 const EExceedsPeriodCap: vector<u8> = b"Amount exceeds the rolling-period spend cap";
+#[error]
+const EPositionAlreadyExists: vector<u8> = b"A position is already custodied for this protocol";
+#[error]
+const ENoPositionForProtocol: vector<u8> = b"No custodied position for this protocol";
 
 // === Structs ===
 
@@ -46,16 +51,19 @@ public struct Treasury<phantom T> has key {
 }
 
 /// Held by the owner. Authorises revocation and principal withdrawal.
-public struct OwnerCap has key, store {
+public struct OwnerCap<phantom T> has key, store {
     id: UID,
     treasury: ID,
 }
 
 /// Held by the agent. Authorises bounded, non-custodial fund release only.
-public struct AgentCap has key, store {
+public struct AgentCap<phantom T> has key, store {
     id: UID,
     treasury: ID,
 }
+
+/// Key for a protocol position receipt held inside the Treasury, one per protocol.
+public struct PositionKey(u8) has copy, drop, store;
 
 // === Events (on-chain receipts) ===
 
@@ -92,11 +100,11 @@ public fun new<T>(
     expiry_ms: u64,
     clock: &Clock,
     ctx: &mut TxContext,
-): (Treasury<T>, OwnerCap, AgentCap) {
+): (Treasury<T>, OwnerCap<T>, AgentCap<T>) {
     let id = object::new(ctx);
     let treasury_id = id.to_inner();
-    let agent_cap = AgentCap { id: object::new(ctx), treasury: treasury_id };
-    let owner_cap = OwnerCap { id: object::new(ctx), treasury: treasury_id };
+    let agent_cap = AgentCap<T> { id: object::new(ctx), treasury: treasury_id };
+    let owner_cap = OwnerCap<T> { id: object::new(ctx), treasury: treasury_id };
 
     let treasury = Treasury<T> {
         id,
@@ -148,12 +156,14 @@ entry fun create<T>(
 
 // === Agent action (bounded, non-custodial) ===
 
-/// Release up to `amount` for the agent to route to an allowlisted protocol in the
-/// same PTB. Enforces: cap is the active agent, not expired, within per-tx cap, and
-/// within the rolling-period cap. Returns the `Coin<T>` (pure — caller composes).
-public fun release_for_action<T>(
+/// Release up to `amount` for an in-package adapter (e.g. `mock_supply`,
+/// `suilend_adapter`) to deposit in the SAME call. NOT public: external PTBs can
+/// never obtain a raw Coin from the treasury — they must go through a verified,
+/// receipt-custodying action. Enforces: cap is the active agent, not expired,
+/// within per-tx cap, and within the rolling-period cap.
+public(package) fun release_for_action<T>(
     treasury: &mut Treasury<T>,
-    cap: &AgentCap,
+    cap: &AgentCap<T>,
     amount: u64,
     clock: &Clock,
     ctx: &mut TxContext,
@@ -182,10 +192,50 @@ public fun release_for_action<T>(
     treasury.funds.split(amount).into_coin(ctx)
 }
 
+// === Receipt custody ===
+
+/// Store a protocol receipt object (e.g. an obligation cap / market coin) INSIDE the
+/// treasury, keyed by protocol. Only in-package adapters call this. The agent has no
+/// way to retrieve it — only the owner (see `owner_take_receipt`).
+public(package) fun custody_receipt<T, R: key + store>(
+    treasury: &mut Treasury<T>,
+    protocol_id: u8,
+    receipt: R,
+) {
+    assert!(!dof::exists_(&treasury.id, PositionKey(protocol_id)), EPositionAlreadyExists);
+    dof::add(&mut treasury.id, PositionKey(protocol_id), receipt);
+}
+
+/// Borrow the custodied receipt mutably so an adapter can deposit into the SAME
+/// position on a later supply. In-package only. Caller must ensure has_position is true.
+public(package) fun borrow_receipt_mut<T, R: key + store>(
+    treasury: &mut Treasury<T>,
+    protocol_id: u8,
+): &mut R {
+    dof::borrow_mut(&mut treasury.id, PositionKey(protocol_id))
+}
+
+/// True if a position for `protocol_id` is already custodied.
+public fun has_position<T>(treasury: &Treasury<T>, protocol_id: u8): bool {
+    dof::exists_(&treasury.id, PositionKey(protocol_id))
+}
+
+/// OWNER-ONLY: remove the custodied receipt (to unwind / withdraw). Requires the
+/// OwnerCap, so the agent can never reach it.
+public fun owner_take_receipt<T, R: key + store>(
+    treasury: &mut Treasury<T>,
+    owner: &OwnerCap<T>,
+    protocol_id: u8,
+): R {
+    assert!(owner.treasury == object::id(treasury), EWrongTreasury);
+    assert!(dof::exists_(&treasury.id, PositionKey(protocol_id)), ENoPositionForProtocol);
+    dof::remove(&mut treasury.id, PositionKey(protocol_id))
+}
+
 // === Owner operations ===
 
 /// Revoke the agent. After this, `release_for_action` aborts with `ENotActiveAgent`.
-public fun revoke<T>(treasury: &mut Treasury<T>, owner: &OwnerCap) {
+public fun revoke<T>(treasury: &mut Treasury<T>, owner: &OwnerCap<T>) {
     assert!(owner.treasury == object::id(treasury), EWrongTreasury);
     treasury.agent = option::none();
     event::emit(AgentRevoked { treasury: object::id(treasury) });
@@ -194,7 +244,7 @@ public fun revoke<T>(treasury: &mut Treasury<T>, owner: &OwnerCap) {
 /// Owner-only principal withdrawal — the agent can never call this.
 public fun withdraw_principal<T>(
     treasury: &mut Treasury<T>,
-    owner: &OwnerCap,
+    owner: &OwnerCap<T>,
     amount: u64,
     ctx: &mut TxContext,
 ): Coin<T> {
@@ -218,7 +268,7 @@ public fun owner<T>(treasury: &Treasury<T>): address {
     treasury.owner
 }
 
-public fun is_agent_active<T>(treasury: &Treasury<T>, cap: &AgentCap): bool {
+public fun is_agent_active<T>(treasury: &Treasury<T>, cap: &AgentCap<T>): bool {
     treasury.agent == option::some(object::id(cap))
 }
 
@@ -275,5 +325,52 @@ fun release_after_revoke_aborts() {
     treasury.revoke(&owner_cap);
     // Agent is revoked — aborts here.
     let _c = treasury.release_for_action(&agent_cap, 50, &clock, &mut ctx);
+    abort
+}
+
+#[test_only]
+public struct DummyReceipt has key, store { id: UID }
+
+/// custody_receipt stores a position under the treasury; has_position sees it;
+/// owner_take_receipt (OwnerCap-gated) removes it. There is intentionally NO
+/// function that lets an AgentCap holder take a custodied receipt.
+#[test]
+fun custody_store_and_owner_take() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let funds = mint_for_testing<SUI>(1_000, &mut ctx);
+    let (mut treasury, owner_cap, agent_cap) =
+        new<SUI>(funds, 100, 300, DAY_MS, DAY_MS, &clock, &mut ctx);
+
+    assert!(!has_position(&treasury, 7));
+    custody_receipt(&mut treasury, 7, DummyReceipt { id: object::new(&mut ctx) });
+    assert!(has_position(&treasury, 7));
+
+    let DummyReceipt { id } =
+        owner_take_receipt<SUI, DummyReceipt>(&mut treasury, &owner_cap, 7);
+    id.delete();
+    assert!(!has_position(&treasury, 7));
+
+    destroy(treasury);
+    destroy(owner_cap);
+    destroy(agent_cap);
+    clock.destroy_for_testing();
+}
+
+#[test, expected_failure(abort_code = EWrongTreasury)]
+fun owner_take_receipt_wrong_cap_aborts() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+
+    let funds_a = mint_for_testing<SUI>(1_000, &mut ctx);
+    let (mut ta, _oca, _aca) = new<SUI>(funds_a, 100, 300, DAY_MS, DAY_MS, &clock, &mut ctx);
+    custody_receipt(&mut ta, 7, DummyReceipt { id: object::new(&mut ctx) });
+
+    let funds_b = mint_for_testing<SUI>(1_000, &mut ctx);
+    let (_tb, ocb, _acb) = new<SUI>(funds_b, 100, 300, DAY_MS, DAY_MS, &clock, &mut ctx);
+
+    // Treasury B's OwnerCap used on Treasury A — aborts with EWrongTreasury.
+    let DummyReceipt { id } = owner_take_receipt<SUI, DummyReceipt>(&mut ta, &ocb, 7);
+    id.delete();
     abort
 }

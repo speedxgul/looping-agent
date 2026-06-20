@@ -253,6 +253,19 @@ fun create_intent_message<P: drop>(intent: u8, timestamp_ms: u64, payload: P): I
     }
 }
 
+/// DEV / LOCALNET ONLY — register an `Enclave<T>` from a raw public key with NO
+/// attestation and NO PCR binding. There is zero proof the key lives in a real TEE,
+/// so this MUST be removed before any testnet/mainnet deployment. It exists solely to
+/// exercise the verified-execution path end-to-end on localnet without Nitro hardware.
+public fun register_enclave_dev<T>(pk: vector<u8>, ctx: &mut TxContext) {
+    transfer::share_object(Enclave<T> {
+        id: object::new(ctx),
+        pk,
+        config_version: 0,
+        owner: ctx.sender(),
+    });
+}
+
 #[test_only]
 public fun destroy<T>(enclave: Enclave<T>) {
     let Enclave { id, .. } = enclave;

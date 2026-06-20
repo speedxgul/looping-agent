@@ -13,14 +13,29 @@ use sui::clock::Clock;
 use sui::coin::Coin;
 use sui::table::{Self, Table};
 use treasury_agent::capability::{Self, AgentCap, Treasury};
+use treasury_agent::mock_supply;
 
 /// Domain separator so an enclave signature for one app can't be replayed in another.
 const DECISION_INTENT: u8 = 0;
+/// v1 action_kind: supply.
+const ACTION_SUPPLY: u8 = 0;
+/// Placeholder protocol id (matches mock_supply::PROTOCOL_MOCK). Phase 3b adds Suilend.
+const PROTOCOL_MOCK: u8 = 255;
 
 #[error]
 const EInvalidSignature: vector<u8> = b"Decision is not signed by the registered enclave";
 #[error]
 const EReplayedOrStaleNonce: vector<u8> = b"Decision nonce was already consumed or is stale (replay)";
+#[error]
+const EWrongTreasuryIntent: vector<u8> = b"ActionIntent does not target this treasury";
+#[error]
+const EWrongAgentCap: vector<u8> = b"ActionIntent does not authorize this AgentCap";
+#[error]
+const EIntentExpired: vector<u8> = b"ActionIntent has expired";
+#[error]
+const EUnsupportedAction: vector<u8> = b"Unsupported action_kind";
+#[error]
+const EUnsupportedProtocol: vector<u8> = b"Unsupported protocol_id";
 
 /// One-time witness binding the registered `Enclave<DECISION>` to this app.
 public struct DECISION has drop {}
@@ -32,6 +47,26 @@ public struct DecisionPayload has copy, drop {
     treasury: ID,
     amount: u64,
     nonce: u64,
+}
+
+/// The full product action schema (design §10). Field order MUST match the BCS in
+/// agent/scripts/gen-action-intent-vector.ts and enclave/app/action_intent.ts.
+public struct ActionIntent has copy, drop {
+    schema_version: u16,
+    chain_id: vector<u8>,
+    treasury_id: ID,
+    agent_cap_id: ID,
+    nonce: u64,
+    expires_at_ms: u64,
+    action_kind: u8,
+    protocol_id: u8,
+    asset_type: vector<u8>,
+    amount: u64,
+    min_health_factor_bps: u64,
+    max_protocol_exposure: u64,
+    policy_hash: vector<u8>,
+    input_hash: vector<u8>,
+    rationale_hash: vector<u8>,
 }
 
 /// Tracks the highest decision nonce consumed per treasury, so a single enclave
@@ -57,7 +92,7 @@ public fun execute_decision<C>(
     registry: &mut DecisionRegistry,
     treasury: &mut Treasury<C>,
     enclave: &Enclave<DECISION>,
-    cap: &AgentCap,
+    cap: &AgentCap<C>,
     amount: u64,
     nonce: u64,
     timestamp_ms: u64,
@@ -75,6 +110,121 @@ public fun execute_decision<C>(
 
     // Capability layer still enforces per-tx / period caps, expiry, and revocation.
     capability::release_for_action(treasury, cap, amount, clock, ctx)
+}
+
+/// Verify the enclave-signed ActionIntent, then execute it. The ONLY external entry
+/// to fund movement on the attested path — `execute_verified` is package-internal,
+/// so a PTB cannot skip the signature check. ActionIntent is `copy`, so it is passed
+/// to both the verifier and the executor.
+public fun verified_supply<C>(
+    registry: &mut DecisionRegistry,
+    treasury: &mut Treasury<C>,
+    enclave: &Enclave<DECISION>,
+    cap: &AgentCap<C>,
+    intent: ActionIntent,
+    timestamp_ms: u64,
+    signature: vector<u8>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert!(
+        enclave.verify_signature(DECISION_INTENT, timestamp_ms, intent, &signature),
+        EInvalidSignature,
+    );
+    execute_verified(registry, treasury, cap, intent, clock, ctx);
+}
+
+/// Intent-binding + expiry + replay + bounded release + custody. Package-internal:
+/// reachable only via `verified_supply` (after a verified signature) or from tests.
+public(package) fun execute_verified<C>(
+    registry: &mut DecisionRegistry,
+    treasury: &mut Treasury<C>,
+    cap: &AgentCap<C>,
+    intent: ActionIntent,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert!(intent.treasury_id == object::id(treasury), EWrongTreasuryIntent);
+    assert!(intent.agent_cap_id == object::id(cap), EWrongAgentCap);
+    assert!(intent.expires_at_ms >= clock.timestamp_ms(), EIntentExpired);
+    assert!(intent.action_kind == ACTION_SUPPLY, EUnsupportedAction);
+    assert!(intent.protocol_id == PROTOCOL_MOCK, EUnsupportedProtocol);
+
+    consume_nonce(registry, intent.treasury_id, intent.nonce);
+
+    mock_supply::supply_and_custody(treasury, cap, intent.amount, clock, ctx);
+}
+
+/// Reconstruct the signed ActionIntent from pure fields (so it can be passed in a PTB).
+fun build_intent(
+    schema_version: u16,
+    chain_id: vector<u8>,
+    treasury_id: address,
+    agent_cap_id: address,
+    nonce: u64,
+    expires_at_ms: u64,
+    action_kind: u8,
+    protocol_id: u8,
+    asset_type: vector<u8>,
+    amount: u64,
+    min_health_factor_bps: u64,
+    max_protocol_exposure: u64,
+    policy_hash: vector<u8>,
+    input_hash: vector<u8>,
+    rationale_hash: vector<u8>,
+): ActionIntent {
+    ActionIntent {
+        schema_version,
+        chain_id,
+        treasury_id: object::id_from_address(treasury_id),
+        agent_cap_id: object::id_from_address(agent_cap_id),
+        nonce,
+        expires_at_ms,
+        action_kind,
+        protocol_id,
+        asset_type,
+        amount,
+        min_health_factor_bps,
+        max_protocol_exposure,
+        policy_hash,
+        input_hash,
+        rationale_hash,
+    }
+}
+
+/// PTB-callable entry: rebuild the ActionIntent from pure fields, then run the
+/// signature-gated verified supply. This is the function the off-chain Submitter calls.
+public fun verified_supply_entry<C>(
+    registry: &mut DecisionRegistry,
+    treasury: &mut Treasury<C>,
+    enclave: &Enclave<DECISION>,
+    cap: &AgentCap<C>,
+    schema_version: u16,
+    chain_id: vector<u8>,
+    treasury_id: address,
+    agent_cap_id: address,
+    nonce: u64,
+    expires_at_ms: u64,
+    action_kind: u8,
+    protocol_id: u8,
+    asset_type: vector<u8>,
+    amount: u64,
+    min_health_factor_bps: u64,
+    max_protocol_exposure: u64,
+    policy_hash: vector<u8>,
+    input_hash: vector<u8>,
+    rationale_hash: vector<u8>,
+    timestamp_ms: u64,
+    signature: vector<u8>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    let intent = build_intent(
+        schema_version, chain_id, treasury_id, agent_cap_id, nonce, expires_at_ms,
+        action_kind, protocol_id, asset_type, amount, min_health_factor_bps,
+        max_protocol_exposure, policy_hash, input_hash, rationale_hash,
+    );
+    verified_supply(registry, treasury, enclave, cap, intent, timestamp_ms, signature, clock, ctx);
 }
 
 /// Reject a replayed or stale nonce, then record it as the latest for the treasury.
@@ -96,6 +246,12 @@ fun consume_nonce(registry: &mut DecisionRegistry, treasury: ID, nonce: u64) {
 use std::bcs;
 #[test_only]
 use std::unit_test::{assert_eq, destroy};
+#[test_only]
+use sui::coin::mint_for_testing;
+#[test_only]
+use sui::sui::SUI;
+#[test_only]
+const DAY_MS: u64 = 86_400_000;
 
 #[test_only]
 fun new_registry(ctx: &mut TxContext): DecisionRegistry {
@@ -168,5 +324,236 @@ fun stale_nonce_aborts() {
     let t = object::id_from_address(@0x2);
     consume_nonce(&mut reg, t, 10);
     consume_nonce(&mut reg, t, 9); // lower than last — aborts
+    abort
+}
+
+#[test]
+fun action_intent_serde() {
+    let intent = ActionIntent {
+        schema_version: 1,
+        chain_id: x"04",
+        treasury_id: object::id_from_address(@0x1),
+        agent_cap_id: object::id_from_address(@0x2),
+        nonce: 7,
+        expires_at_ms: 1_700_000_100_000,
+        action_kind: 0,
+        protocol_id: 0,
+        asset_type: b"USDC",
+        amount: 1000,
+        min_health_factor_bps: 0,
+        max_protocol_exposure: 0,
+        policy_hash: x"1111111111111111111111111111111111111111111111111111111111111111",
+        input_hash: x"2222222222222222222222222222222222222222222222222222222222222222",
+        rationale_hash: x"3333333333333333333333333333333333333333333333333333333333333333",
+    };
+    let bytes = bcs::to_bytes(&intent);
+    assert_eq!(bytes, x"01000104000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020700000000000000a0eee6cf8b01000000000455534443e80300000000000000000000000000000000000000000000201111111111111111111111111111111111111111111111111111111111111111202222222222222222222222222222222222222222222222222222222222222222203333333333333333333333333333333333333333333333333333333333333333");
+}
+
+/// Verifies a real secp256k1 signature over the canonical ActionIntent envelope.
+#[test]
+fun verify_real_action_intent() {
+    let mut ctx = tx_context::dummy();
+    let pk = x"034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa";
+    let e = enclave::new_enclave_for_testing<DECISION>(pk, &mut ctx);
+    let sig = x"3eff101a6e656813555c38d1ba4a48ddc29bc356abfcc21b2548eb5a4a7b702d2cc6d9f86bdc40d417872662f6c19ba9b5fa52e0148984026278d8d74383fe89";
+
+    let intent = ActionIntent {
+        schema_version: 1, chain_id: x"04",
+        treasury_id: object::id_from_address(@0x1),
+        agent_cap_id: object::id_from_address(@0x2),
+        nonce: 7, expires_at_ms: 1_700_000_100_000,
+        action_kind: 0, protocol_id: 0, asset_type: b"USDC", amount: 1000,
+        min_health_factor_bps: 0, max_protocol_exposure: 0,
+        policy_hash: x"1111111111111111111111111111111111111111111111111111111111111111",
+        input_hash: x"2222222222222222222222222222222222222222222222222222222222222222",
+        rationale_hash: x"3333333333333333333333333333333333333333333333333333333333333333",
+    };
+    assert!(e.verify_signature(DECISION_INTENT, 1_700_000_000_000, intent, &sig));
+
+    let mut tampered = intent;
+    tampered.amount = 1001;
+    assert!(!e.verify_signature(DECISION_INTENT, 1_700_000_000_000, tampered, &sig));
+
+    e.destroy();
+}
+
+#[test]
+fun verified_supply_supplies_and_custodies() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let mut registry = new_registry(&mut ctx);
+    let funds = mint_for_testing<SUI>(1_000, &mut ctx);
+    let (mut treasury, owner_cap, agent_cap) =
+        capability::new<SUI>(funds, 100, 300, DAY_MS, DAY_MS, &clock, &mut ctx);
+
+    let intent = ActionIntent {
+        schema_version: 1, chain_id: x"04",
+        treasury_id: object::id(&treasury),
+        agent_cap_id: object::id(&agent_cap),
+        nonce: 1, expires_at_ms: DAY_MS,
+        action_kind: 0, protocol_id: 255, asset_type: b"USDC", amount: 100,
+        min_health_factor_bps: 0, max_protocol_exposure: 0,
+        policy_hash: x"", input_hash: x"", rationale_hash: x"",
+    };
+    execute_verified(&mut registry, &mut treasury, &agent_cap, intent, &clock, &mut ctx);
+
+    assert_eq!(treasury.balance(), 900);
+    assert!(capability::has_position(&treasury, 255));
+
+    destroy(registry);
+    destroy(treasury);
+    destroy(owner_cap);
+    destroy(agent_cap);
+    clock.destroy_for_testing();
+}
+
+#[test, expected_failure(abort_code = EWrongTreasuryIntent)]
+fun execute_verified_wrong_treasury_aborts() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let mut registry = new_registry(&mut ctx);
+    let funds = mint_for_testing<SUI>(1_000, &mut ctx);
+    let (mut treasury, _owner_cap, agent_cap) =
+        capability::new<SUI>(funds, 100, 300, DAY_MS, DAY_MS, &clock, &mut ctx);
+
+    let intent = ActionIntent {
+        schema_version: 1, chain_id: x"04",
+        treasury_id: object::id_from_address(@0x9),
+        agent_cap_id: object::id(&agent_cap),
+        nonce: 1, expires_at_ms: DAY_MS,
+        action_kind: 0, protocol_id: 255, asset_type: b"USDC", amount: 100,
+        min_health_factor_bps: 0, max_protocol_exposure: 0,
+        policy_hash: x"", input_hash: x"", rationale_hash: x"",
+    };
+    execute_verified(&mut registry, &mut treasury, &agent_cap, intent, &clock, &mut ctx);
+    abort
+}
+
+#[test, expected_failure(abort_code = EWrongAgentCap)]
+fun execute_verified_wrong_cap_aborts() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let mut registry = new_registry(&mut ctx);
+    let funds = mint_for_testing<SUI>(1_000, &mut ctx);
+    let (mut treasury, _owner_cap, agent_cap) =
+        capability::new<SUI>(funds, 100, 300, DAY_MS, DAY_MS, &clock, &mut ctx);
+
+    let intent = ActionIntent {
+        schema_version: 1, chain_id: x"04",
+        treasury_id: object::id(&treasury),
+        agent_cap_id: object::id_from_address(@0x9),
+        nonce: 1, expires_at_ms: DAY_MS,
+        action_kind: 0, protocol_id: 255, asset_type: b"USDC", amount: 100,
+        min_health_factor_bps: 0, max_protocol_exposure: 0,
+        policy_hash: x"", input_hash: x"", rationale_hash: x"",
+    };
+    execute_verified(&mut registry, &mut treasury, &agent_cap, intent, &clock, &mut ctx);
+    abort
+}
+
+#[test, expected_failure(abort_code = EUnsupportedProtocol)]
+fun execute_verified_unsupported_protocol_aborts() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let mut registry = new_registry(&mut ctx);
+    let funds = mint_for_testing<SUI>(1_000, &mut ctx);
+    let (mut treasury, _owner_cap, agent_cap) =
+        capability::new<SUI>(funds, 100, 300, DAY_MS, DAY_MS, &clock, &mut ctx);
+
+    let intent = ActionIntent {
+        schema_version: 1, chain_id: x"04",
+        treasury_id: object::id(&treasury),
+        agent_cap_id: object::id(&agent_cap),
+        nonce: 1, expires_at_ms: DAY_MS,
+        action_kind: 0, protocol_id: 7,
+        asset_type: b"USDC", amount: 100,
+        min_health_factor_bps: 0, max_protocol_exposure: 0,
+        policy_hash: x"", input_hash: x"", rationale_hash: x"",
+    };
+    execute_verified(&mut registry, &mut treasury, &agent_cap, intent, &clock, &mut ctx);
+    abort
+}
+
+#[test, expected_failure(abort_code = EUnsupportedAction)]
+fun execute_verified_unsupported_action_aborts() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let mut registry = new_registry(&mut ctx);
+    let funds = mint_for_testing<SUI>(1_000, &mut ctx);
+    let (mut treasury, _owner_cap, agent_cap) =
+        capability::new<SUI>(funds, 100, 300, DAY_MS, DAY_MS, &clock, &mut ctx);
+
+    let intent = ActionIntent {
+        schema_version: 1, chain_id: x"04",
+        treasury_id: object::id(&treasury),
+        agent_cap_id: object::id(&agent_cap),
+        nonce: 1, expires_at_ms: DAY_MS,
+        action_kind: 9,
+        protocol_id: 255, asset_type: b"USDC", amount: 100,
+        min_health_factor_bps: 0, max_protocol_exposure: 0,
+        policy_hash: x"", input_hash: x"", rationale_hash: x"",
+    };
+    execute_verified(&mut registry, &mut treasury, &agent_cap, intent, &clock, &mut ctx);
+    abort
+}
+
+#[test, expected_failure(abort_code = EIntentExpired)]
+fun execute_verified_expired_aborts() {
+    let mut ctx = tx_context::dummy();
+    let mut clock = sui::clock::create_for_testing(&mut ctx);
+    clock.increment_for_testing(1_000_000);
+    let mut registry = new_registry(&mut ctx);
+    let funds = mint_for_testing<SUI>(1_000, &mut ctx);
+    let (mut treasury, _owner_cap, agent_cap) =
+        capability::new<SUI>(funds, 100, 300, DAY_MS, DAY_MS, &clock, &mut ctx);
+
+    let intent = ActionIntent {
+        schema_version: 1, chain_id: x"04",
+        treasury_id: object::id(&treasury),
+        agent_cap_id: object::id(&agent_cap),
+        nonce: 1, expires_at_ms: 1,
+        action_kind: 0, protocol_id: 255, asset_type: b"USDC", amount: 100,
+        min_health_factor_bps: 0, max_protocol_exposure: 0,
+        policy_hash: x"", input_hash: x"", rationale_hash: x"",
+    };
+    execute_verified(&mut registry, &mut treasury, &agent_cap, intent, &clock, &mut ctx);
+    abort
+}
+
+#[test]
+fun entry_build_intent_matches_canonical() {
+    let intent = build_intent(
+        1, x"04", @0x1, @0x2, 7, 1_700_000_100_000, 0, 0, b"USDC", 1000, 0, 0,
+        x"1111111111111111111111111111111111111111111111111111111111111111",
+        x"2222222222222222222222222222222222222222222222222222222222222222",
+        x"3333333333333333333333333333333333333333333333333333333333333333",
+    );
+    assert_eq!(
+        bcs::to_bytes(&intent),
+        x"01000104000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020700000000000000a0eee6cf8b01000000000455534443e80300000000000000000000000000000000000000000000201111111111111111111111111111111111111111111111111111111111111111202222222222222222222222222222222222222222222222222222222222222222203333333333333333333333333333333333333333333333333333333333333333",
+    );
+}
+
+#[test, expected_failure(abort_code = EReplayedOrStaleNonce)]
+fun execute_verified_replayed_nonce_aborts() {
+    let mut ctx = tx_context::dummy();
+    let clock = sui::clock::create_for_testing(&mut ctx);
+    let mut registry = new_registry(&mut ctx);
+    let funds = mint_for_testing<SUI>(1_000, &mut ctx);
+    let (mut treasury, _owner_cap, agent_cap) =
+        capability::new<SUI>(funds, 100, 1_000, DAY_MS, DAY_MS, &clock, &mut ctx);
+
+    let intent = ActionIntent {
+        schema_version: 1, chain_id: x"04",
+        treasury_id: object::id(&treasury),
+        agent_cap_id: object::id(&agent_cap),
+        nonce: 5, expires_at_ms: DAY_MS,
+        action_kind: 0, protocol_id: 255, asset_type: b"USDC", amount: 100,
+        min_health_factor_bps: 0, max_protocol_exposure: 0,
+        policy_hash: x"", input_hash: x"", rationale_hash: x"",
+    };
+    execute_verified(&mut registry, &mut treasury, &agent_cap, intent, &clock, &mut ctx);
+    execute_verified(&mut registry, &mut treasury, &agent_cap, intent, &clock, &mut ctx);
     abort
 }
