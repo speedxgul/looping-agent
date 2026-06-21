@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { StoredBlob, WalrusBlobClient } from '../clients/storage/walrusBlobClient.js';
-import type { AppConfig, LendingProtocol, Logger, SubagentRole } from '../types.js';
+import type { AppConfig, LendingProtocol, Logger, StrategyExecutionActor, SubagentRole } from '../types.js';
 
 export type SubagentStatus = 'idle' | 'running' | 'ok' | 'error' | 'disabled';
 export type ProposalStatus = 'open' | 'accepted' | 'rejected' | 'expired';
 export type PlanStatus = 'accepted' | 'executing' | 'executed' | 'failed' | 'cancelled';
 export type RiskLockSeverity = 'warning' | 'critical';
 export type LoopPositionStatus = 'opening' | 'active' | 'unwinding' | 'closed';
+export type StrategyProposalType = 'open_loop' | 'borrow_against_existing_collateral';
 
 export interface SubagentHeartbeat {
   role: SubagentRole;
@@ -70,6 +71,8 @@ export interface LoopStrategyProposal {
   id: string;
   runId: string;
   proposerRole: SubagentRole;
+  proposalType: StrategyProposalType;
+  createdBy?: StrategyExecutionActor;
   createdAt: string;
   expiresAt: string;
   status: ProposalStatus;
@@ -87,6 +90,10 @@ export interface LoopStrategyProposal {
   unwindPath: string[];
   marketSnapshotId: string;
   positionSnapshotId: string;
+  sourcePositionId?: string;
+  targetSupplyAsset?: 'SUI';
+  netAprBps?: number;
+  rationale?: string;
   rejectionReason?: string;
 }
 
@@ -103,6 +110,10 @@ export interface AcceptedPlan {
   status: PlanStatus;
   policy: PolicyResult;
   executorRunId?: string;
+  claimedBy?: StrategyExecutionActor;
+  claimedAt?: string;
+  claimExpiresAt?: string;
+  executionFingerprint?: string;
   executionReceiptId?: string;
   failureReason?: string;
 }
@@ -121,6 +132,7 @@ export interface ExecutionReceipt {
   planId: string;
   proposalId: string;
   executorRunId: string;
+  executedBy?: StrategyExecutionActor;
   dryRun: boolean;
   startedAt: string;
   completedAt: string;
@@ -350,7 +362,13 @@ export function normalizeStrategyLedger(
     },
     marketSnapshots: parsed.marketSnapshots ?? [],
     positionSnapshots: parsed.positionSnapshots ?? [],
-    strategyProposals: parsed.strategyProposals ?? [],
+    strategyProposals: (parsed.strategyProposals ?? []).map((proposal) => ({
+      ...proposal,
+      proposalType: proposal.proposalType ?? 'open_loop',
+      createdBy: proposal.createdBy ?? proposal.proposerRole,
+      targetSupplyAsset: proposal.targetSupplyAsset ?? proposal.borrowAsset,
+      netAprBps: proposal.netAprBps ?? proposal.projectedNetAprBps
+    })),
     acceptedPlans: parsed.acceptedPlans ?? [],
     executionReceipts: parsed.executionReceipts ?? [],
     riskLocks: parsed.riskLocks ?? [],

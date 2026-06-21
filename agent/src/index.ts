@@ -103,6 +103,11 @@ async function main() {
     return;
   }
 
+  if (command === 'run-supervisor') {
+    await runSupervisor({ config, clients, logger });
+    return;
+  }
+
   if (command !== 'run-once') {
     logger.error(`Unknown command: ${command}`);
     process.exitCode = 1;
@@ -323,6 +328,107 @@ async function runSubagentDaemon({
 
   await tick();
   setInterval(tick, intervalMs);
+}
+
+async function runSupervisor({
+  config,
+  clients,
+  logger
+}: {
+  config: AppConfig;
+  clients: Clients;
+  logger: Logger;
+}): Promise<void> {
+  const ledgerStore = new StrategyLedgerStore({ config, logger });
+  const agent = createAutonomousAgent({ config, clients, logger });
+  const roles = config.runtime.supervisorRoles ?? [
+    'main',
+    'rate-scout',
+    'position-risk',
+    'loop-strategist',
+    'coordinator',
+    'executor',
+    'unwind-guard'
+  ];
+  const running = new Set<string>();
+
+  async function tickMain(): Promise<void> {
+    if (running.has('main')) {
+      logger.warn('Skipping supervised main-agent tick because prior loop is still running');
+      return;
+    }
+
+    running.add('main');
+    try {
+      const result = await agent.runOnce();
+      printRunReport(result.outputText);
+      logger.info('Supervised main-agent tick completed');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error('Supervised main-agent loop failed', { error: message });
+    } finally {
+      running.delete('main');
+    }
+  }
+
+  function startSubagent(role: SubagentRole, opts: { immediate?: boolean } = {}): void {
+    async function tick(): Promise<void> {
+      if (running.has(role)) {
+        logger.warn('Skipping supervised subagent tick because prior loop is still running', { role });
+        return;
+      }
+
+      running.add(role);
+      try {
+        await runSubagentTick({ role, config, clients, logger, ledgerStore });
+        logger.info('Supervised subagent tick completed', { role, ledgerPath: ledgerStore.path });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error('Supervised subagent loop failed', { role, error: message });
+      } finally {
+        running.delete(role);
+      }
+    }
+
+    const intervalMs = config.runtime.subagentIntervalsMs?.[role] ?? defaultSubagentIntervalMs(role);
+    if (opts.immediate ?? true) {
+      void tick();
+    }
+    setInterval(tick, intervalMs);
+  }
+
+  logger.info('Starting supervised agent pipeline', { roles, ledgerPath: ledgerStore.path });
+
+  const bootstrapOrder: SubagentRole[] = [
+    'rate-scout',
+    'position-risk',
+    'loop-strategist',
+    'coordinator',
+    'executor',
+    'unwind-guard'
+  ];
+  for (const role of bootstrapOrder) {
+    if (roles.includes(role)) {
+      try {
+        await runSubagentTick({ role, config, clients, logger, ledgerStore });
+        logger.info('Supervised bootstrap subagent tick completed', { role, ledgerPath: ledgerStore.path });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error('Supervised bootstrap subagent tick failed', { role, error: message });
+      }
+    }
+  }
+
+  if (roles.includes('main')) {
+    void tickMain();
+    setInterval(tickMain, config.runtime.autonomyIntervalMs);
+  }
+
+  for (const role of roles) {
+    if (role !== 'main') {
+      startSubagent(role, { immediate: false });
+    }
+  }
 }
 
 function parseSubagentRole(value: string | undefined): SubagentRole | null {

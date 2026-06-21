@@ -6,6 +6,7 @@ import type {
   Logger,
   NormalizedPosition,
   NormalizedPositions,
+  StrategyExecutionActor,
   SubagentRole
 } from '../types.js';
 import type {
@@ -249,71 +250,73 @@ export async function runCoordinator(options: SubagentTickOptions, _runId: strin
 }
 
 export async function runExecutor(options: SubagentTickOptions, runId: string): Promise<void> {
+  await claimAndExecuteAcceptedPlan({ ...options, actor: 'executor', runId });
+}
+
+export async function claimAndExecuteAcceptedPlan(
+  options: SubagentTickOptions & {
+    actor: StrategyExecutionActor;
+    runId: string;
+    planId?: string;
+  }
+): Promise<Record<string, unknown>> {
   let plan: AcceptedPlan | undefined;
   let proposal: LoopStrategyProposal | undefined;
+  const now = Date.now();
+  const claimExpiresAt = new Date(now + options.config.loopStrategy.executionClaimTtlMs).toISOString();
 
   await options.ledgerStore.update((ledger) => {
-    plan = ledger.acceptedPlans.find((candidate) => candidate.status === 'accepted');
-    if (!plan) {
+    const candidate = options.planId
+      ? ledger.acceptedPlans.find((entry) => entry.id === options.planId)
+      : ledger.acceptedPlans.find((entry) => entry.status === 'accepted' || claimExpired(entry, now));
+    if (!candidate) {
       return;
     }
-    proposal = ledger.strategyProposals.find((candidate) => candidate.id === plan?.proposalId);
-    if (!proposal) {
-      plan.status = 'failed';
-      plan.failureReason = 'Accepted proposal is missing';
+    if (candidate.status !== 'accepted' && !claimExpired(candidate, now)) {
       return;
     }
-    plan.status = 'executing';
-    plan.executorRunId = runId;
+
+    const foundProposal = ledger.strategyProposals.find((entry) => entry.id === candidate.proposalId);
+    if (!foundProposal) {
+      candidate.status = 'failed';
+      candidate.failureReason = 'Accepted proposal is missing';
+      return;
+    }
+
+    candidate.status = 'executing';
+    candidate.executorRunId = options.runId;
+    candidate.claimedBy = options.actor;
+    candidate.claimedAt = new Date(now).toISOString();
+    candidate.claimExpiresAt = claimExpiresAt;
+    candidate.executionFingerprint = executionFingerprint(foundProposal);
+    plan = { ...candidate };
+    proposal = foundProposal;
   });
 
   if (!plan || !proposal) {
-    return;
+    return { ok: true, claimed: false, reason: 'No accepted plan available to claim' };
   }
+
   const executionPlan = plan;
   const executionProposal = proposal;
-
   const ledger = options.ledgerStore.load();
   const gate = validateExecutorGate(executionProposal, ledger, options.config);
   if (!gate.allowed) {
     await options.ledgerStore.update((updated) => {
       const current = updated.acceptedPlans.find((candidate) => candidate.id === executionPlan.id);
-      if (current) {
+      if (current && current.claimedBy === options.actor && current.executorRunId === options.runId) {
         current.status = 'failed';
         current.failureReason = gate.reason;
       }
     });
-    return;
+    return { ok: false, claimed: true, blocked: true, reason: gate.reason };
   }
 
   const beforeHealthFactor = latestPositionSnapshot(ledger)?.protocols.find(
     (positions) => positions.protocol === executionProposal.collateralProtocol
   )?.healthFactor;
 
-  const legs: ExecutionLegReceipt[] = [
-    {
-      protocol: executionProposal.collateralProtocol,
-      action: 'supply',
-      asset: executionProposal.collateralAsset,
-      rawAmount: executionProposal.rawCollateralAmount,
-      status: options.config.runtime.dryRun ? 'planned' : 'submitted'
-    },
-    {
-      protocol: executionProposal.borrowProtocol,
-      action: 'borrow',
-      asset: executionProposal.borrowAsset,
-      rawAmount: executionProposal.rawBorrowAmount,
-      status: options.config.runtime.dryRun ? 'planned' : 'submitted'
-    },
-    {
-      protocol: executionProposal.supplyTargetProtocol,
-      action: 'supply',
-      asset: executionProposal.borrowAsset,
-      rawAmount: executionProposal.rawBorrowAmount,
-      status: options.config.runtime.dryRun ? 'planned' : 'submitted'
-    }
-  ];
-
+  const legs = executionLegs(executionProposal, options.config.runtime.dryRun);
   let status: 'planned' | 'confirmed' | 'failed' = options.config.runtime.dryRun ? 'planned' : 'confirmed';
   let error: string | undefined;
 
@@ -323,12 +326,17 @@ export async function runExecutor(options: SubagentTickOptions, runId: string): 
       const collateralClient = protocolClient(options.clients, executionProposal.collateralProtocol);
       const targetClient = protocolClient(options.clients, executionProposal.supplyTargetProtocol);
 
-      const supplied = await collateralClient.executeSupply({
-        coinType: collateralClient.resolveCoinType(executionProposal.collateralAsset),
-        asset: executionProposal.collateralAsset,
-        rawAmount: executionProposal.rawCollateralAmount
-      });
-      legs[0] = confirmedLeg(legs[0], supplied.digest);
+      if (executionProposal.proposalType !== 'borrow_against_existing_collateral') {
+        const supplied = await collateralClient.executeSupply({
+          coinType: collateralClient.resolveCoinType(executionProposal.collateralAsset),
+          asset: executionProposal.collateralAsset,
+          rawAmount: executionProposal.rawCollateralAmount
+        });
+        const supplyIndex = legs.findIndex(
+          (leg) => leg.action === 'supply' && leg.asset === executionProposal.collateralAsset
+        );
+        legs[supplyIndex] = confirmedLeg(legs[supplyIndex], supplied.digest);
+      }
 
       const positions = await collateralClient.getPositions(options.config.agent.walletAddress);
       const borrowed = await collateralClient.executeBorrow({
@@ -337,14 +345,18 @@ export async function runExecutor(options: SubagentTickOptions, runId: string): 
         rawAmount: executionProposal.rawBorrowAmount,
         positions
       });
-      legs[1] = confirmedLeg(legs[1], borrowed.digest);
+      const borrowIndex = legs.findIndex((leg) => leg.action === 'borrow');
+      legs[borrowIndex] = confirmedLeg(legs[borrowIndex], borrowed.digest);
 
       const targetSupplied = await targetClient.executeSupply({
         coinType: targetClient.resolveCoinType(executionProposal.borrowAsset),
         asset: executionProposal.borrowAsset,
         rawAmount: executionProposal.rawBorrowAmount
       });
-      legs[2] = confirmedLeg(legs[2], targetSupplied.digest);
+      const targetSupplyIndex = legs.findIndex(
+        (leg) => leg.action === 'supply' && leg.protocol === executionProposal.supplyTargetProtocol
+      );
+      legs[targetSupplyIndex] = confirmedLeg(legs[targetSupplyIndex], targetSupplied.digest);
     } catch (caught: unknown) {
       status = 'failed';
       error = caught instanceof Error ? caught.message : String(caught);
@@ -361,9 +373,10 @@ export async function runExecutor(options: SubagentTickOptions, runId: string): 
     id: `receipt-${executionPlan.id}-${Date.now()}`,
     planId: executionPlan.id,
     proposalId: executionProposal.id,
-    executorRunId: runId,
+    executorRunId: options.runId,
+    executedBy: options.actor,
     dryRun: options.config.runtime.dryRun,
-    startedAt: completedAt,
+    startedAt: executionPlan.claimedAt ?? completedAt,
     completedAt,
     status,
     legs,
@@ -372,14 +385,16 @@ export async function runExecutor(options: SubagentTickOptions, runId: string): 
   };
 
   await options.ledgerStore.update(async (updated) => {
-    updated.executionReceipts.unshift(receipt);
     const current = updated.acceptedPlans.find((candidate) => candidate.id === executionPlan.id);
-    if (current) {
-      current.status = status === 'failed' ? 'failed' : 'executed';
-      current.executionReceiptId = receipt.id;
-      if (error) {
-        current.failureReason = error;
-      }
+    if (!current || current.claimedBy !== options.actor || current.executorRunId !== options.runId) {
+      return;
+    }
+
+    updated.executionReceipts.unshift(receipt);
+    current.status = status === 'failed' ? 'failed' : 'executed';
+    current.executionReceiptId = receipt.id;
+    if (error) {
+      current.failureReason = error;
     }
 
     if (status !== 'failed') {
@@ -409,6 +424,17 @@ export async function runExecutor(options: SubagentTickOptions, runId: string): 
       receipt
     );
   });
+
+  return {
+    ok: status !== 'failed',
+    claimed: true,
+    dryRun: options.config.runtime.dryRun,
+    planId: executionPlan.id,
+    proposalId: executionProposal.id,
+    receiptId: receipt.id,
+    status,
+    ...(error ? { error } : {})
+  };
 }
 
 export async function runUnwindGuard(options: SubagentTickOptions, _runId: string): Promise<void> {
@@ -478,6 +504,13 @@ export function buildLoopProposal(input: {
     return null;
   }
 
+  if (config.loopStrategy.useExistingCollateral) {
+    const existing = buildExistingCollateralProposal(input);
+    if (existing) {
+      return existing;
+    }
+  }
+
   const collateralMarkets = market.rates.filter((rate) => rate.asset.toUpperCase() === 'USDC');
   const borrowMarkets = market.rates.filter((rate) => rate.asset.toUpperCase() === 'SUI');
   const collateralProtocol = collateralMarkets[0]?.protocol;
@@ -514,6 +547,8 @@ export function buildLoopProposal(input: {
     id: `proposal-${input.runId}-${input.existingProposalCount ?? 0}`,
     runId: input.runId,
     proposerRole: 'loop-strategist',
+    proposalType: 'open_loop',
+    createdBy: 'loop-strategist',
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + config.loopStrategy.proposalTtlMs).toISOString(),
     status: 'open',
@@ -528,10 +563,99 @@ export function buildLoopProposal(input: {
     borrowUsd,
     projectedHealthFactor,
     projectedNetAprBps,
+    netAprBps: projectedNetAprBps,
+    targetSupplyAsset: 'SUI',
+    rationale: `Open a fresh ${collateralAsset} collateral loop, borrow ${borrowAsset}, and supply ${borrowAsset} to ${target.protocol}.`,
     unwindPath: [
       `withdraw ${borrowAsset} from ${target.protocol}`,
       `repay ${borrowAsset} on ${collateralProtocol}`,
       `withdraw ${collateralAsset} from ${collateralProtocol}`
+    ],
+    marketSnapshotId: market.id,
+    positionSnapshotId: positions.id
+  };
+}
+
+function buildExistingCollateralProposal(input: {
+  config: AppConfig;
+  runId: string;
+  market: MarketSnapshot | null;
+  positions: PositionSnapshot | null;
+  existingProposalCount?: number;
+}): LoopStrategyProposal | null {
+  const { config, market, positions } = input;
+  if (!market || !positions) {
+    return null;
+  }
+
+  const collateral = positions.protocols
+    .flatMap((protocol) =>
+      protocol.deposits
+        .filter((deposit) => deposit.asset.toUpperCase() === 'USDC' && deposit.amountUsd > 0)
+        .map((deposit) => ({ protocol, deposit }))
+    )
+    .sort((a, b) => b.deposit.amountUsd - a.deposit.amountUsd)[0];
+  if (!collateral) {
+    return null;
+  }
+
+  const borrowMarket = market.rates.find(
+    (rate) => rate.protocol === collateral.protocol.protocol && rate.asset.toUpperCase() === 'SUI'
+  );
+  if (!borrowMarket) {
+    return null;
+  }
+
+  const target = market.rates
+    .filter((rate) => rate.asset.toUpperCase() === 'SUI' && rate.protocol !== collateral.protocol.protocol)
+    .sort((a, b) => b.supplyApr - a.supplyApr)[0];
+  if (!target) {
+    return null;
+  }
+
+  const borrowUsd = plannedBorrowUsd(collateral.protocol, config);
+  if (borrowUsd <= 0) {
+    return null;
+  }
+
+  const projectedWeightedBorrow = collateral.protocol.weightedBorrowsUsd + borrowUsd;
+  const borrowLimitUsd = effectiveBorrowLimitUsd(collateral.protocol);
+  const projectedHealthFactor =
+    projectedWeightedBorrow > 0 ? borrowLimitUsd / projectedWeightedBorrow : Number.POSITIVE_INFINITY;
+  const projectedNetAprBps = Math.round((target.supplyApr - borrowMarket.borrowApr) * 100);
+  const suiPrice = borrowMarket.priceUsd > 0 ? borrowMarket.priceUsd : 1;
+  const rawBorrowAmount = Math.max(1, Math.floor((borrowUsd / suiPrice) * 1_000_000_000)).toString();
+  const now = Date.now();
+  const collateralProtocol = collateral.protocol.protocol;
+
+  return {
+    id: `proposal-${input.runId}-${input.existingProposalCount ?? 0}`,
+    runId: input.runId,
+    proposerRole: 'loop-strategist',
+    proposalType: 'borrow_against_existing_collateral',
+    createdBy: 'loop-strategist',
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + config.loopStrategy.proposalTtlMs).toISOString(),
+    status: 'open',
+    collateralAsset: 'USDC',
+    borrowAsset: 'SUI',
+    collateralProtocol,
+    borrowProtocol: collateralProtocol,
+    supplyTargetProtocol: target.protocol,
+    rawCollateralAmount: collateral.deposit.rawAmount,
+    rawBorrowAmount,
+    collateralUsd: collateral.deposit.amountUsd,
+    borrowUsd,
+    projectedHealthFactor,
+    projectedNetAprBps,
+    netAprBps: projectedNetAprBps,
+    sourcePositionId: `${collateralProtocol}:${collateral.deposit.coinType}:${collateral.deposit.rawAmount}`,
+    targetSupplyAsset: 'SUI',
+    rationale: `Use existing ${collateral.deposit.amountUsd.toFixed(2)} USDC collateral on ${collateralProtocol}, borrow SUI, and supply SUI to ${target.protocol}.`,
+    unwindPath: [
+      `withdraw SUI from ${target.protocol}`,
+      `repay SUI on ${collateralProtocol}`,
+      `leave existing USDC collateral on ${collateralProtocol}`
     ],
     marketSnapshotId: market.id,
     positionSnapshotId: positions.id
@@ -565,6 +689,9 @@ export function validateLoopProposal(
   if (proposal.supplyTargetProtocol === proposal.collateralProtocol) {
     return deny('SUI supply target must be a different protocol from the collateral protocol');
   }
+  if (proposal.proposalType === 'borrow_against_existing_collateral' && !proposal.sourcePositionId) {
+    return deny('Existing-collateral proposal is missing sourcePositionId');
+  }
   if (new Date(proposal.expiresAt).getTime() <= now) {
     return deny('Proposal expired');
   }
@@ -581,7 +708,10 @@ export function validateLoopProposal(
   if (proposal.borrowUsd > config.loopStrategy.maxBorrowUsd) {
     return deny(`Borrow amount exceeds LOOP_MAX_BORROW_USD (${config.loopStrategy.maxBorrowUsd})`);
   }
-  if (proposal.collateralUsd > config.loopStrategy.maxCollateralUsd) {
+  if (
+    proposal.proposalType === 'open_loop' &&
+    proposal.collateralUsd > config.loopStrategy.maxCollateralUsd
+  ) {
     return deny(
       `Collateral amount exceeds LOOP_MAX_COLLATERAL_USD (${config.loopStrategy.maxCollateralUsd})`
     );
@@ -672,6 +802,91 @@ function normalizePositionLeg(protocol: LendingProtocol, leg: NormalizedPosition
 
 function protocolClient(clients: Clients, protocol: LendingProtocol): LendingProtocolClient {
   return clients[protocol] as unknown as LendingProtocolClient;
+}
+
+function claimExpired(plan: AcceptedPlan, now = Date.now()): boolean {
+  return (
+    plan.status === 'executing' &&
+    Boolean(plan.claimExpiresAt) &&
+    new Date(plan.claimExpiresAt ?? '').getTime() <= now
+  );
+}
+
+function executionFingerprint(proposal: LoopStrategyProposal): string {
+  return [
+    proposal.proposalType,
+    proposal.collateralProtocol,
+    proposal.supplyTargetProtocol,
+    proposal.collateralAsset,
+    proposal.borrowAsset,
+    proposal.rawCollateralAmount,
+    proposal.rawBorrowAmount,
+    proposal.sourcePositionId ?? ''
+  ].join(':');
+}
+
+function executionLegs(proposal: LoopStrategyProposal, dryRun: boolean): ExecutionLegReceipt[] {
+  const status = dryRun ? 'planned' : 'submitted';
+  const legs: ExecutionLegReceipt[] = [];
+
+  if (proposal.proposalType !== 'borrow_against_existing_collateral') {
+    legs.push({
+      protocol: proposal.collateralProtocol,
+      action: 'supply',
+      asset: proposal.collateralAsset,
+      rawAmount: proposal.rawCollateralAmount,
+      status
+    });
+  }
+
+  legs.push(
+    {
+      protocol: proposal.borrowProtocol,
+      action: 'borrow',
+      asset: proposal.borrowAsset,
+      rawAmount: proposal.rawBorrowAmount,
+      status
+    },
+    {
+      protocol: proposal.supplyTargetProtocol,
+      action: 'supply',
+      asset: proposal.borrowAsset,
+      rawAmount: proposal.rawBorrowAmount,
+      status
+    }
+  );
+
+  return legs;
+}
+
+function plannedBorrowUsd(positions: ProtocolPositionSnapshot, config: AppConfig): number {
+  const borrowLimitUsd = effectiveBorrowLimitUsd(positions);
+  if (borrowLimitUsd <= 0) {
+    return 0;
+  }
+
+  const capacityByFraction = Math.max(
+    0,
+    (borrowLimitUsd - positions.weightedBorrowsUsd) * config.loopStrategy.borrowCapacityFraction
+  );
+  const capacityByHealth =
+    borrowLimitUsd / config.loopStrategy.minHealthFactor - positions.weightedBorrowsUsd;
+  return Math.max(0, Math.min(config.loopStrategy.maxBorrowUsd, capacityByFraction, capacityByHealth));
+}
+
+function effectiveBorrowLimitUsd(positions: ProtocolPositionSnapshot): number {
+  if (positions.borrowLimitUsd > 0) {
+    return positions.borrowLimitUsd;
+  }
+
+  if (positions.depositedAmountUsd <= 0 || positions.borrowedAmountUsd > 0) {
+    return 0;
+  }
+
+  // Some protocols do not expose borrow capacity before the first borrow. Use a
+  // conservative 50% collateral-derived fallback; live execution still simulates
+  // projected HF where the protocol client supports it.
+  return positions.depositedAmountUsd * 0.5;
 }
 
 function confirmedLeg(leg: ExecutionLegReceipt | undefined, digest: string): ExecutionLegReceipt {

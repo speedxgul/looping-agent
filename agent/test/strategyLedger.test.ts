@@ -14,6 +14,7 @@ import {
 } from '../src/core/strategyLedger.js';
 import {
   buildLoopProposal,
+  claimAndExecuteAcceptedPlan,
   runCoordinator,
   runExecutor,
   runLoopStrategist,
@@ -69,6 +70,50 @@ describe('StrategyLedgerStore', () => {
 });
 
 describe('loop proposal policy', () => {
+  test('builds borrow-against-existing-collateral proposal from NAVI USDC deposit', () => {
+    const config = loopConfig(tempLedgerPath());
+    config.loopStrategy.borrowCapacityFraction = 0.25;
+    const ledger = createEmptyStrategyLedger(config);
+    ledger.marketSnapshots.unshift(existingCollateralMarketSnapshot());
+    ledger.positionSnapshots.unshift(existingCollateralPositionSnapshot(config));
+
+    const proposal = buildLoopProposal({
+      config,
+      runId: 'strategy-existing',
+      market: first(ledger.marketSnapshots),
+      positions: first(ledger.positionSnapshots)
+    });
+
+    expect(proposal?.proposalType).toBe('borrow_against_existing_collateral');
+    expect(proposal?.collateralProtocol).toBe('navi');
+    expect(proposal?.supplyTargetProtocol).toBe('scallop');
+    expect(proposal?.sourcePositionId).toContain('navi');
+    expect(proposal?.borrowUsd).toBe(5);
+    expect(proposal?.rawBorrowAmount).toBe('5000000000');
+  });
+
+  test('sizes existing-collateral proposal even when first-borrow limit is not exposed', () => {
+    const config = loopConfig(tempLedgerPath());
+    config.loopStrategy.maxBorrowUsd = 25;
+    config.loopStrategy.borrowCapacityFraction = 0.25;
+    const ledger = createEmptyStrategyLedger(config);
+    ledger.marketSnapshots.unshift(existingCollateralMarketSnapshot());
+    const positions = existingCollateralPositionSnapshot(config);
+    first(positions.protocols).borrowLimitUsd = 0;
+    ledger.positionSnapshots.unshift(positions);
+
+    const proposal = buildLoopProposal({
+      config,
+      runId: 'strategy-fallback-capacity',
+      market: first(ledger.marketSnapshots),
+      positions: first(ledger.positionSnapshots)
+    });
+
+    expect(proposal?.proposalType).toBe('borrow_against_existing_collateral');
+    expect(proposal?.borrowUsd).toBe(2.5);
+    expect(proposal?.projectedHealthFactor).toBe(4);
+  });
+
   test('rejects expired, low-HF, low-APR, oversized, same-protocol, and stale-snapshot plans', () => {
     const config = loopConfig(tempLedgerPath());
     const ledger = seededLedger(config);
@@ -125,6 +170,51 @@ describe('loop proposal policy', () => {
 
     expect(decision.allowed).toBe(false);
     expect(decision.reason).toContain('ENABLE_SUI_BORROW');
+  });
+
+  test('execution claim prevents duplicate submission when main agent and executor race', async () => {
+    const config = loopConfig(tempLedgerPath());
+    const clients = mockClients({ naviDepositUsd: 20, naviBorrowLimitUsd: 20 });
+    const store = new StrategyLedgerStore({ config, logger: quietLogger() });
+    const ledger = createEmptyStrategyLedger(config);
+    ledger.marketSnapshots.unshift(existingCollateralMarketSnapshot());
+    ledger.positionSnapshots.unshift(existingCollateralPositionSnapshot(config));
+    const proposal = buildLoopProposal({
+      config,
+      runId: 'race-proposal',
+      market: first(ledger.marketSnapshots),
+      positions: first(ledger.positionSnapshots)
+    });
+    if (!proposal) {
+      throw new Error('Expected existing collateral proposal');
+    }
+    ledger.strategyProposals.unshift({ ...proposal, status: 'accepted' });
+    ledger.acceptedPlans.unshift({
+      id: `plan-${proposal.id}`,
+      proposalId: proposal.id,
+      acceptedAt: new Date().toISOString(),
+      status: 'accepted',
+      policy: { allowed: true, reason: 'test', checkedAt: new Date().toISOString() }
+    });
+    store.save(ledger);
+
+    const [main, executor] = await Promise.all([
+      claimAndExecuteAcceptedPlan({
+        ...tickOptions(config, store, clients),
+        actor: 'main-agent',
+        runId: 'main-race'
+      }),
+      claimAndExecuteAcceptedPlan({
+        ...tickOptions(config, store, clients),
+        actor: 'executor',
+        runId: 'executor-race'
+      })
+    ]);
+
+    const saved = store.load();
+    expect(saved.executionReceipts).toHaveLength(1);
+    expect(saved.acceptedPlans[0]?.status).toBe('executed');
+    expect([main.claimed, executor.claimed].filter(Boolean)).toHaveLength(1);
   });
 });
 
@@ -244,6 +334,40 @@ function marketSnapshot(): MarketSnapshot {
   };
 }
 
+function existingCollateralMarketSnapshot(): MarketSnapshot {
+  return {
+    id: 'market-existing',
+    runId: 'rates-existing',
+    capturedAt: new Date().toISOString(),
+    rates: [
+      {
+        protocol: 'navi',
+        asset: 'SUI',
+        coinType: 'sui-coin',
+        supplyApr: 2,
+        borrowApr: 4,
+        priceUsd: 1
+      },
+      {
+        protocol: 'suilend',
+        asset: 'SUI',
+        coinType: 'sui-coin',
+        supplyApr: 3,
+        borrowApr: 5,
+        priceUsd: 1
+      },
+      {
+        protocol: 'scallop',
+        asset: 'SUI',
+        coinType: 'sui-coin',
+        supplyApr: 7,
+        borrowApr: 6,
+        priceUsd: 1
+      }
+    ]
+  };
+}
+
 function positionSnapshot(config: AppConfig): PositionSnapshot {
   return {
     id: 'positions-1',
@@ -265,7 +389,44 @@ function positionSnapshot(config: AppConfig): PositionSnapshot {
   };
 }
 
-function mockClients(input: { suilendHealthFactor?: number; suilendBorrowUsd?: number } = {}): Clients {
+function existingCollateralPositionSnapshot(config: AppConfig): PositionSnapshot {
+  return {
+    id: 'positions-existing',
+    runId: 'positions-existing',
+    walletAddress: config.agent.walletAddress,
+    capturedAt: new Date().toISOString(),
+    protocols: [
+      {
+        protocol: 'navi',
+        healthFactor: Number.POSITIVE_INFINITY,
+        borrowLimitUsd: 20,
+        weightedBorrowsUsd: 0,
+        depositedAmountUsd: 20,
+        borrowedAmountUsd: 0,
+        deposits: [
+          {
+            protocol: 'navi',
+            asset: 'USDC',
+            coinType: 'usdc-coin',
+            rawAmount: '20000000',
+            amountUsd: 20,
+            side: 'deposit'
+          }
+        ],
+        borrows: []
+      }
+    ]
+  };
+}
+
+function mockClients(
+  input: {
+    suilendHealthFactor?: number;
+    suilendBorrowUsd?: number;
+    naviDepositUsd?: number;
+    naviBorrowLimitUsd?: number;
+  } = {}
+): Clients {
   const protocolClient = (protocol: LendingProtocol) => ({
     name: protocol,
     enabled: true,
@@ -337,20 +498,37 @@ function mockClients(input: { suilendHealthFactor?: number; suilendBorrowUsd?: n
 
 function normalizedPositions(
   protocol: LendingProtocol,
-  input: { suilendHealthFactor?: number; suilendBorrowUsd?: number }
+  input: {
+    suilendHealthFactor?: number;
+    suilendBorrowUsd?: number;
+    naviDepositUsd?: number;
+    naviBorrowLimitUsd?: number;
+  }
 ): NormalizedPositions {
   const borrowedAmountUsd = protocol === 'suilend' ? (input.suilendBorrowUsd ?? 0) : 0;
+  const naviDepositUsd = protocol === 'navi' ? (input.naviDepositUsd ?? 0) : 0;
   return {
     protocol,
     healthFactor:
       protocol === 'suilend'
         ? (input.suilendHealthFactor ?? Number.POSITIVE_INFINITY)
         : Number.POSITIVE_INFINITY,
-    borrowLimitUsd: protocol === 'suilend' ? 100 : 0,
+    borrowLimitUsd: protocol === 'suilend' ? 100 : protocol === 'navi' ? (input.naviBorrowLimitUsd ?? 0) : 0,
     weightedBorrowsUsd: borrowedAmountUsd,
-    depositedAmountUsd: protocol === 'suilend' ? 100 : 0,
+    depositedAmountUsd: protocol === 'suilend' ? 100 : naviDepositUsd,
     borrowedAmountUsd,
-    deposits: [],
+    deposits:
+      naviDepositUsd > 0
+        ? [
+            {
+              symbol: 'USDC',
+              coinType: 'usdc-coin',
+              amount: String(Math.floor(naviDepositUsd * 1_000_000)),
+              amountUsd: naviDepositUsd,
+              side: 'deposit'
+            }
+          ]
+        : [],
     borrows:
       borrowedAmountUsd > 0
         ? [

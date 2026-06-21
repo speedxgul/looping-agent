@@ -20,6 +20,7 @@ export type SubagentRole =
   | 'loop-strategist'
   | 'executor'
   | 'unwind-guard';
+export type StrategyExecutionActor = SubagentRole | 'main-agent';
 
 export type Logger = ReturnType<typeof createLogger>;
 
@@ -29,6 +30,7 @@ export interface AppConfig {
     nodeEnv: string;
     autonomyIntervalMs: number;
     subagentIntervalsMs?: Record<SubagentRole, number>;
+    supervisorRoles?: Array<SubagentRole | 'main'>;
   };
   logLevel: string;
   agent: {
@@ -110,6 +112,11 @@ export interface AppConfig {
     proposalTtlMs: number;
     staleHeartbeatMs: number;
     staleSnapshotMs: number;
+    useExistingCollateral: boolean;
+    borrowCapacityFraction: number;
+    executionClaimTtlMs: number;
+    llmStrategistEnabled: boolean;
+    mainAgentSupplyWhenLoopEnabled: boolean;
   };
 }
 

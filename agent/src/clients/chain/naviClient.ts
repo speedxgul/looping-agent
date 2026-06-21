@@ -185,13 +185,13 @@ export class NaviClient implements LendingProtocolClient {
       const pool = (info.pool ?? {}) as Record<string, unknown>;
       const coinType = withHexPrefix(String(pool.coinType ?? ''));
       const symbol = symbolForCoinType(coinType);
-      const decimals = oracleDecimals(pool);
       const price = oraclePrice(pool);
+      const positionDecimals = naviPositionDecimals(pool);
 
       const supplyRaw = String(info.supplyBalance ?? '0');
       const borrowRaw = String(info.borrowBalance ?? '0');
-      const supplyUsd = toUsd(supplyRaw, decimals, price);
-      const borrowUsd = toUsd(borrowRaw, decimals, price);
+      const supplyUsd = toUsd(supplyRaw, positionDecimals, price);
+      const borrowUsd = toUsd(borrowRaw, positionDecimals, price);
 
       if (Number(supplyRaw) > 0) {
         depositedAmountUsd += supplyUsd;
@@ -331,6 +331,12 @@ function oracleDecimals(pool: Record<string, unknown>): number {
   if (coinType.toLowerCase().includes('usdc')) {
     return 6;
   }
+  return 9;
+}
+
+function naviPositionDecimals(_pool: Record<string, unknown>): number {
+  // NAVI portfolio balances are normalized to 1e9 precision even for USDC. Market
+  // coin decimals are still used for wallet coin inputs and reserve curves.
   return 9;
 }
 

@@ -24,7 +24,16 @@ export function loadConfig(): AppConfig {
         'loop-strategist': readNumber('LOOP_STRATEGIST_INTERVAL_MS', 900000),
         executor: readNumber('EXECUTOR_INTERVAL_MS', 60000),
         'unwind-guard': readNumber('UNWIND_GUARD_INTERVAL_MS', 60000)
-      }
+      },
+      supervisorRoles: readSupervisorRoles('SUPERVISOR_ROLES', [
+        'main',
+        'rate-scout',
+        'position-risk',
+        'loop-strategist',
+        'coordinator',
+        'executor',
+        'unwind-guard'
+      ])
     },
     logLevel: readString('LOG_LEVEL', 'info'),
     agent: {
@@ -116,7 +125,12 @@ export function loadConfig(): AppConfig {
       minNetAprBps: readNumber('LOOP_MIN_NET_APR_BPS', 100),
       proposalTtlMs: readNumber('LOOP_PROPOSAL_TTL_MS', 300000),
       staleHeartbeatMs: readNumber('SUBAGENT_STALE_HEARTBEAT_MS', 600000),
-      staleSnapshotMs: readNumber('LOOP_STALE_SNAPSHOT_MS', 600000)
+      staleSnapshotMs: readNumber('LOOP_STALE_SNAPSHOT_MS', 600000),
+      useExistingCollateral: readBoolean('LOOP_USE_EXISTING_COLLATERAL', true),
+      borrowCapacityFraction: readNumber('LOOP_BORROW_CAPACITY_FRACTION', 0.25),
+      executionClaimTtlMs: readNumber('LOOP_EXECUTION_CLAIM_TTL_MS', 120000),
+      llmStrategistEnabled: readBoolean('SUBAGENT_LLM_STRATEGIST_ENABLED', false),
+      mainAgentSupplyWhenLoopEnabled: readBoolean('MAIN_AGENT_SUPPLY_WHEN_LOOP_ENABLED', false)
     }
   };
 }
@@ -220,6 +234,37 @@ function readLendingProtocols(name: string, fallback: LendingProtocol[]): Lendin
   const csv = readCsv(name).map((value) => value.toLowerCase());
   const valid = csv.filter(
     (value): value is LendingProtocol => value === 'suilend' || value === 'navi' || value === 'scallop'
+  );
+  return valid.length > 0 ? valid : fallback;
+}
+
+function readSupervisorRoles(
+  name: string,
+  fallback: Array<
+    'main' | 'coordinator' | 'rate-scout' | 'position-risk' | 'loop-strategist' | 'executor' | 'unwind-guard'
+  >
+): Array<
+  'main' | 'coordinator' | 'rate-scout' | 'position-risk' | 'loop-strategist' | 'executor' | 'unwind-guard'
+> {
+  const csv = readCsv(name).map((value) => value.toLowerCase());
+  const valid = csv.filter(
+    (
+      value
+    ): value is
+      | 'main'
+      | 'coordinator'
+      | 'rate-scout'
+      | 'position-risk'
+      | 'loop-strategist'
+      | 'executor'
+      | 'unwind-guard' =>
+      value === 'main' ||
+      value === 'coordinator' ||
+      value === 'rate-scout' ||
+      value === 'position-risk' ||
+      value === 'loop-strategist' ||
+      value === 'executor' ||
+      value === 'unwind-guard'
   );
   return valid.length > 0 ? valid : fallback;
 }

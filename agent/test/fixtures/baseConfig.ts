@@ -13,7 +13,16 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         'loop-strategist': 1000,
         executor: 1000,
         'unwind-guard': 1000
-      }
+      },
+      supervisorRoles: [
+        'main',
+        'rate-scout',
+        'position-risk',
+        'loop-strategist',
+        'coordinator',
+        'executor',
+        'unwind-guard'
+      ]
     },
     logLevel: 'info',
     agent: {
@@ -88,7 +97,12 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       minNetAprBps: 100,
       proposalTtlMs: 300000,
       staleHeartbeatMs: 600000,
-      staleSnapshotMs: 600000
+      staleSnapshotMs: 600000,
+      useExistingCollateral: true,
+      borrowCapacityFraction: 0.25,
+      executionClaimTtlMs: 120000,
+      llmStrategistEnabled: false,
+      mainAgentSupplyWhenLoopEnabled: false
     },
     ...overrides
   };
