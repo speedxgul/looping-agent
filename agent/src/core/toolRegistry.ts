@@ -337,6 +337,19 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
         return { ok: false, error: 'Sui lending is disabled' };
       }
       const protocol = parseProtocolArg(args.protocol);
+      // Non-custodial mode: positions live in the on-chain Treasury, not the agent wallet —
+      // report the custodied receipt(s) for this protocol instead of the (empty) wallet read.
+      if (config.treasury.enabled && clients.treasury) {
+        const custodied = (await clients.treasury.readPositions()).filter((p) => p.protocol === protocol);
+        return {
+          ok: true,
+          mode: 'treasury-vault',
+          treasuryId: clients.treasury.treasuryId,
+          protocol,
+          custodied,
+          note: 'Non-custodial mode: funds + positions are held in the on-chain Treasury, not the agent wallet. Use get_treasury_status for the deployable budget and get_treasury_positions for all custodied receipts.'
+        };
+      }
       const positions = await protocolClient(clients, protocol).getPositions(config.agent.walletAddress);
       if (protocol === 'suilend') {
         updateSnapshots(memory.state, {
@@ -723,11 +736,25 @@ async function getOptimalAllocation(
     };
   }
 
-  // Budget = idle USDC, capped by the treasury supply hints (min idle / max supply).
-  const balances = await clients.suiExecution.getCoinBalances(config.agent.walletAddress);
-  const usdcRaw = BigInt(balances.usdc.raw);
-  const hints = buildSupplyHints(config, usdcRaw, memory.state);
-  const budgetRaw = BigInt(hints.supplyableRaw);
+  // Budget: in non-custodial treasury mode this is the VAULT's deployable (the agent wallet
+  // holds no USDC by design); the enclave makes the final signed allocation in treasury_supply,
+  // so this is the off-chain preview over the same budget. Otherwise it's wallet idle USDC
+  // capped by min-idle / max-supply.
+  let budgetRaw: bigint;
+  let canSupply: boolean;
+  let supplyReason: string | null;
+  if (config.treasury.enabled && clients.treasury) {
+    const b = await clients.treasury.readBudget(Date.now());
+    budgetRaw = b.deployableRaw;
+    canSupply = b.canSupply;
+    supplyReason = b.reason ?? null;
+  } else {
+    const balances = await clients.suiExecution.getCoinBalances(config.agent.walletAddress);
+    const hints = buildSupplyHints(config, BigInt(balances.usdc.raw), memory.state);
+    budgetRaw = BigInt(hints.supplyableRaw);
+    canSupply = hints.canSupply;
+    supplyReason = hints.reason;
+  }
 
   // Gather the USDC reserve curve from each write-enabled, allowlisted protocol.
   const usdcAsset = config.sui.defaultAssets.usdc;
@@ -764,9 +791,9 @@ async function getOptimalAllocation(
       ok: true,
       asset: usdcAsset,
       budgetRaw: budgetRaw.toString(),
-      canSupply: hints.canSupply,
+      canSupply,
       allocations: [],
-      reason: hints.reason ?? 'No eligible reserve curves to allocate across',
+      reason: supplyReason ?? 'No eligible reserve curves to allocate across',
       skipped
     };
   }
@@ -848,7 +875,7 @@ async function getOptimalAllocation(
     ok: true,
     asset: usdcAsset,
     budgetRaw: budgetRaw.toString(),
-    canSupply: hints.canSupply,
+    canSupply,
     allocations: legs,
     blendedNetApr: allocation.blendedNetApr,
     marginalApr: allocation.marginalApr,

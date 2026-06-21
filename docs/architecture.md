@@ -9,10 +9,13 @@ relates to the on-chain Move package and the longer-term TEE-verified custody de
 >   and write on three lending protocols, route idle USDC with an own-impact-aware
 >   optimizer, run a six-subagent yield-looping pipeline, and persist a verifiable
 >   strategy ledger.
-> - The **on-chain package** (`move/`) has three modules built and tested
->   (`capability`, `decision`, `enclave`); the receipt-custody upgrade
->   (`verified_supply`) that makes fund movement fully non-custodial is still on the
->   roadmap. See [`treasury-agent-design.md`](treasury-agent-design.md).
+> - The **on-chain packages** (`move/packages/`) are **built and deployed live on Sui
+>   mainnet** — a protocol-free `treasury_core` plus per-protocol adapter packages. The
+>   receipt-custody upgrade (`verified_supply`) that makes fund movement fully
+>   non-custodial is **done**: funds are released from the `Treasury` only against an
+>   enclave signature and the protocol receipt is custodied back into the vault atomically,
+>   across all three protocols (incl. NAVI via its `AccountCap`). See
+>   [`treasury-agent-design.md`](treasury-agent-design.md) and `move/README.md`.
 
 The system separates **autonomous decision-making** from **protocol access** and keeps
 **all risk enforcement in deterministic code**, never in the model.
@@ -198,7 +201,7 @@ All three are **fully integrated for reads and writes** through the shared
 | Protocol | SDK | Reads | Writes | Receipt model | Notes |
 |---|---|---|---|---|---|
 | **Suilend** | `@suilend/sdk` | | | `ObligationOwnerCap` (owned object) | First-class; obligation created on first supply. |
-| **NAVI** | `@naviprotocol/lending` | | | none — address-bound | Excluded from the *non-custodial* on-chain mode (no transferable receipt); off-chain reads/writes work. |
+| **NAVI** | `@naviprotocol/lending` | | | `AccountCap` (owned object) | Non-custodial on-chain via the AccountCap path — the cap is custodied in the `Treasury`, so NAVI *is* in the non-custodial mode. |
 | **Scallop** | `@scallop-io/sui-scallop-sdk` | | | obligation + key | Up to 5 sub-accounts per obligation. |
 
 Each protocol is gated by two flags: `enabled` (reads) and `write`
@@ -206,23 +209,33 @@ Each protocol is gated by two flags: `enabled` (reads) and `write`
 
 ---
 
-## 5. The on-chain package (`move/`)
+## 5. The on-chain packages (`move/packages/`)
 
-The Move package is the eventual choke-point that makes fund movement provably
-non-custodial. **Built and tested today:**
+The choke-point that makes fund movement provably non-custodial — **built, tested, and
+deployed live on Sui mainnet** as a split architecture: a protocol-free `treasury_core`
+plus one adapter package per protocol (so no single package carries two protocols'
+conflicting dependency graphs). See `move/README.md` and `move/packages/DEPLOY.md`.
 
-- `capability.move` — `Treasury` + `OwnerCap` + `AgentCap`; per-tx and rolling-period
-  caps, expiry, owner revocation, principal withdrawal, on-chain receipt events.
-  `release_for_action` currently returns a raw `Coin<T>` into the PTB.
-- `decision.move` — verifies an enclave signature over a decision payload and enforces
-  a strictly-increasing nonce (replay protection), then releases via the capability.
-- `enclave.move` — registers the enclave's secp256k1 key bound to its PCR measurement
+- `core/capability.move` — `Treasury` + `OwnerCap` + `AgentCap`; per-tx and rolling-period
+  caps, expiry, owner revocation, principal withdrawal, on-chain receipt events. The
+  bounded release returns a `Coin<T>` **plus a `ReleaseTicket` hot-potato** that the
+  caller is forced to discharge by custodying the protocol receipt — funds can never end
+  up loose.
+- `core/decision.move` — verifies the enclave signature over the canonical `ActionIntent`,
+  checks an on-chain adapter allowlist (binds `protocol_id` → adapter witness, Cap-gated),
+  enforces a strictly-increasing nonce, then performs the bounded `verified_release`.
+- `core/seal_policy.move` — Seal gate (release key-shares only to the attested enclave).
+- `enclave/` — registers the enclave's secp256k1 key bound to its PCR measurement
   (AWS Nitro attestation) and verifies signatures against it.
+- `{scallop,navi,suilend,mock}_adapter/` — each depends on `core` + its one protocol's
+  real published source; exposes `verified_supply_*_entry` (supply + custody) and
+  `owner_redeem` (OwnerCap-gated unwind).
 
-**Not yet built (roadmap):** `verified_supply` / receipt custody (the core
-non-custodial upgrade), and an on-chain bounds `verifier`. Until then, the off-chain
-host composes the downstream supply after the coin is released. See
-[`treasury-agent-design.md`](treasury-agent-design.md) §6 and §14.
+**`verified_supply` / receipt custody is done** — the released coin is supplied into the
+protocol and its receipt (sCoin / `AccountCap` / `ObligationOwnerCap`) is custodied back
+into the `Treasury` in one atomic transaction. Proven live across all three protocols via
+the autonomous agent. Remaining roadmap: an on-chain bounds `verifier` (the off-chain
+`policy.ts` port). See [`treasury-agent-design.md`](treasury-agent-design.md).
 
 ---
 

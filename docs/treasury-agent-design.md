@@ -11,11 +11,13 @@
 > six-subagent yield-looping pipeline) executing real supply/withdraw/borrow/repay on
 > Suilend, NAVI, and Scallop under deterministic caps, allowlists, and health-factor
 > guards (see [`architecture.md`](architecture.md) and
-> [`subagent-pipeline.md`](subagent-pipeline.md)). The on-chain modules below
-> (`capability`, `decision`, `enclave`) are built and tested; the
-> receipt-custody upgrade (`verified_supply`) that closes the last custody gap is the
-> active roadmap item. This document is the **target architecture** for that
-> non-custodial, TEE-attested end state.
+> [`subagent-pipeline.md`](subagent-pipeline.md)). The on-chain packages below are
+> **built and deployed live on Sui mainnet** as a split architecture (protocol-free
+> `treasury_core` + per-protocol adapters); the receipt-custody upgrade (`verified_supply`)
+> that closes the custody gap is **done** — proven live across Suilend, NAVI (via
+> `AccountCap`), and Scallop through the autonomous agent. See `move/README.md` and
+> `move/packages/DEPLOY.md`. This document covers the full non-custodial, TEE-attested
+> design; the one remaining roadmap item is the on-chain bounds `verifier`.
 
 ## Contents
 
