@@ -1,6 +1,16 @@
 # DeFi Agent v0
 
-An extensible v1 scaffold for an autonomous DeFi treasury agent on **Sui**. OpenAI decides what to do, and local tool adapters perform bounded lending actions:
+A production(Mainnet) multi-agent autonomous DeFi treasury system on **Sui** that executes real
+on-chain lending actions, with **two decision engines** over one deterministic
+enforcement layer:
+
+- a **main agent** — an OpenAI tool-calling loop that plans and explains, and
+- a **six-subagent pipeline** — rate-scout, position-risk, loop-strategist,
+coordinator, executor, and unwind-guard, cooperating through a shared strategy ledger
+to run **single-depth USDC→SUI yield loops** with no LLM in the fund-moving path
+(see [the subagent pipeline doc](../docs/subagent-pipeline.md)).
+
+Local tool adapters perform bounded lending actions:
 
 - reads lending markets, positions, borrow limits, and health factors across Suilend, NAVI, and Scallop when enabled
 - compares supply/borrow APRs across Suilend, NAVI, and Scallop for allowlisted assets
@@ -13,12 +23,9 @@ An extensible v1 scaffold for an autonomous DeFi treasury agent on **Sui**. Open
 - can post confirmed supply updates to X when X posting is explicitly enabled
 - defaults to `DRY_RUN=true`, so it will not post or execute transactions unless explicitly enabled
 
-This version does not require writing Move contracts. It is an off-chain agent that talks to existing protocols and APIs.
-
-## Branches
-
-- **`base/fluid`** — frozen snapshot of the Base/Fluid (EVM) agent. Use it to reference or run the EVM version.
-- **`main` / `feat/sui-native`** — Sui-native build with Suilend, NAVI, and Scallop execution, shared agent loop, memory, Walrus/MemWal, and X posting.
+The off-chain system runs autonomously against live protocols today. The companion  
+on-chain Move package ([../move/](../move/)) adds provable non-custodial custody and
+is on the roadmap (receipt-custody `verified_supply`, on-chain bounds verifier).
 
 ## Quick Start
 
@@ -26,7 +33,8 @@ This version does not require writing Move contracts. It is an off-chain agent t
 cp .env.example .env
 # set OPENAI_API_KEY and AGENT_SUI_PRIVATE_KEY in .env
 bun run doctor
-bun run run:once
+bun run run:once          # one main-agent loop
+bun run run:supervisor    # main agent + the six-subagent loop pipeline
 ```
 
 Set `AGENT_WALLET_ADDRESS` (or `AGENT_SUI_ADDRESS`) to the address derived from your Sui private key.
@@ -39,25 +47,34 @@ src/
     chain/        Sui execution + lending protocol clients (Suilend, NAVI, Scallop)
     http/         off-chain API clients (OpenAI)
     storage/      Walrus blob + MemWal memory clients
-  core/           autonomous agent loop, agent memory, memory store, policy, health guard, tools
+  core/           main agent loop, subagent pipeline (subagents.ts), strategy ledger
+                  (strategyLedger.ts), allocation solver, agent memory, memory store,
+                  policy, health guard, tools
   utils/          config, http, amounts, Sui private key, logging helpers
 scripts/
   memwal-keygen.ts        generate a MemWal delegate key
   check-suilend-rates.ts  print live Suilend market rates
+  verify-allocation.ts    print allocation solver legs + APR math
 data/
-  agent-state.json   local persistent memory / Walrus cache (gitignored)
-  walrus-pointer.json latest Walrus state blob id (gitignored)
+  agent-state.json     local persistent memory / Walrus cache (gitignored)
+  strategy-ledger.json subagent pipeline state — snapshots/proposals/plans/receipts (gitignored)
+  walrus-pointer.json  latest Walrus state blob id (gitignored)
 ```
 
 This is the `agent/` package of a monorepo. The on-chain Move package lives in
-[`../move/`](../move/) and the design docs in [`../docs/`](../docs/)
-(architecture, autonomy, deployment, thesis, strategy research). All commands here
-run from `agent/`, or from the repo root via the passthrough scripts (`bun run typecheck`,
-`bun run test`, `bun run move:test`, …).
+[`../move/`](../move/) and the docs in [`../docs/`](../docs/):
+[architecture.md](../docs/architecture.md) (what's built),
+[strategies.md](../docs/strategies.md) (strategies + math),
+[subagent-pipeline.md](../docs/subagent-pipeline.md) (the loop pipeline),
+[autonomy.md](../docs/autonomy.md), [deployment.md](../docs/deployment.md), and
+[treasury-agent-design.md](../docs/treasury-agent-design.md). All commands here run from
+`agent/`, or from the repo root via the passthrough scripts.
 
-## Current V1 Behavior
+## Behavior
 
-`bun run run:once` performs one autonomous loop:
+The system runs two engines. `bun run run:supervisor` runs both together; the loop
+pipeline is documented in [the subagent pipeline doc](../docs/subagent-pipeline.md).
+`bun run run:once` performs one **main-agent** loop:
 
 1. Loads agent memory from the configured backend (local file or Walrus) and injects a summary into the prompt. When MemWal is enabled, relevant long-term memories are recalled and injected too.
 2. Runs the **health guard** when borrows exist: if health factor is below `SUI_MIN_HEALTH_FACTOR`, auto-repay executes (or records a planned repay in dry-run) before the LLM loop.
@@ -114,20 +131,6 @@ bun run account:address
 
 `AGENT_SUI_PRIVATE_KEY` must be a **hex private key** (`0x` + 64 hex chars) or a **`suiprivkey1…`** bech32 key — not a mnemonic or wallet address.
 
-## X Posting
-
-`post_action_update` posts text-only treasury updates to X API v2 and clears the pending `tweet_action` task only after X returns a post id. This is gated separately from `DRY_RUN`. `post_deposit_update` remains as a backward-compatible alias.
-
-```bash
-ENABLE_X_POSTING=true
-X_API_BASE=https://api.x.com
-X_USER_ACCESS_TOKEN=...
-```
-
-`X_USER_ACCESS_TOKEN` must be a preissued user-context access token for the X account that should post, with permission to create posts. This project does not implement OAuth 1.0a or OAuth 2.0 PKCE token issuance in v1.
-
-If `ENABLE_X_POSTING=false` or the token is missing, confirmed supplies do not queue new tweet tasks, and existing legacy `tweet_action` tasks are treated as non-blocking for treasury execution. If X posting is enabled and an X API call fails, the pending task remains in memory so the agent can retry posting on a future run.
-
 ## Walrus Memory & Verifiable Storage
 
 The agent can use [Walrus](https://walrus.xyz) as a verifiable data platform for its memory, giving it three properties a single local file can't: durability, portability across machines, and verifiability. Defaults target Walrus **testnet** and the MemWal **staging** relayer, so no funded wallet is required to demo.
@@ -165,8 +168,8 @@ MemWal adds encrypted, verifiable, semantic memory the agent recalls across sess
 bun run memwal:keygen
 ```
 
-2. Create a MemWalAccount at `https://staging.memory.walrus.xyz` (testnet), register the printed delegate Sui address on it, and copy the account id.
-3. Configure `.env`:
+1. Create a MemWalAccount at `https://staging.memory.walrus.xyz` (testnet), register the printed delegate Sui address on it, and copy the account id.
+2. Configure `.env`:
 
 ```bash
 MEMWAL_ENABLED=true

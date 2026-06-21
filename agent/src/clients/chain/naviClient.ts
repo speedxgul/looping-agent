@@ -107,7 +107,11 @@ export class NaviClient implements LendingProtocolClient {
           asset,
           coinType,
           navi: {
-            supplyApr: naviRateToPercent(pool, 'currentSupplyRate', 'supplyIncentiveApyInfo'),
+            // Base lending rate + boosted incentive APR, matching the NAVI dApp's
+            // "Total" supply APY (and the netSupplyApr the allocator uses).
+            supplyApr:
+              naviRateToPercent(pool, 'currentSupplyRate', 'supplyIncentiveApyInfo') +
+              naviSupplyBoostApr(pool),
             borrowApr: naviRateToPercent(pool, 'currentBorrowRate', 'borrowIncentiveApyInfo')
           }
         };
@@ -126,7 +130,10 @@ export class NaviClient implements LendingProtocolClient {
         // NAVI returns coin types without the 0x prefix; canonicalize so downstream
         // matching against config coin types (which are 0x-prefixed) succeeds.
         const coinType = withHexPrefix(String(pool.coinType ?? ''));
-        const supplyApr = naviRateToPercent(pool, 'currentSupplyRate', 'supplyIncentiveApyInfo');
+        // Base lending rate calibrates the reserve curve; the boosted incentive APR is
+        // additive on top for display/ranking (and mirrored by the curve's reward APR).
+        const baseSupplyApr = naviRateToPercent(pool, 'currentSupplyRate', 'supplyIncentiveApyInfo');
+        const supplyApr = baseSupplyApr + naviSupplyBoostApr(pool);
         const borrowApr = naviRateToPercent(pool, 'currentBorrowRate', 'borrowIncentiveApyInfo');
         const decimals = oracleDecimals(pool);
         const price = oraclePrice(pool);
@@ -139,7 +146,7 @@ export class NaviClient implements LendingProtocolClient {
           totalApr: supplyApr,
           price,
           allowed: this.isAssetAllowed(coinType),
-          curve: buildNaviCurve(pool, coinType, decimals, price, supplyApr, borrowApr)
+          curve: buildNaviCurve(pool, coinType, decimals, price, baseSupplyApr, borrowApr)
         };
       })
       .filter((market) => market.coinType && market.allowed)
@@ -178,13 +185,13 @@ export class NaviClient implements LendingProtocolClient {
       const pool = (info.pool ?? {}) as Record<string, unknown>;
       const coinType = withHexPrefix(String(pool.coinType ?? ''));
       const symbol = symbolForCoinType(coinType);
-      const decimals = oracleDecimals(pool);
       const price = oraclePrice(pool);
+      const positionDecimals = naviPositionDecimals(pool);
 
       const supplyRaw = String(info.supplyBalance ?? '0');
       const borrowRaw = String(info.borrowBalance ?? '0');
-      const supplyUsd = toUsd(supplyRaw, decimals, price);
-      const borrowUsd = toUsd(borrowRaw, decimals, price);
+      const supplyUsd = toUsd(supplyRaw, positionDecimals, price);
+      const borrowUsd = toUsd(borrowRaw, positionDecimals, price);
 
       if (Number(supplyRaw) > 0) {
         depositedAmountUsd += supplyUsd;
@@ -338,6 +345,12 @@ function oracleDecimals(pool: Record<string, unknown>): number {
   return 9;
 }
 
+function naviPositionDecimals(_pool: Record<string, unknown>): number {
+  // NAVI portfolio balances are normalized to 1e9 precision even for USDC. Market
+  // coin decimals are still used for wallet coin inputs and reserve curves.
+  return 9;
+}
+
 function toUsd(rawAmount: string, decimals: number, price: number): number {
   const amount = Number(rawAmount) / 10 ** decimals;
   return Number.isFinite(amount) ? amount * price : 0;
@@ -370,6 +383,16 @@ function naviRateToPercent(pool: Record<string, unknown>, rateKey: string, incen
   }
 
   return 0;
+}
+
+// Incremental supply incentive APR (percent), i.e. the boosted reward token APR that
+// is additive on top of the base `currentSupplyRate`. NAVI reports these incentive
+// fields already as percentages (not RAY-scaled). We use `boostedApr` rather than the
+// `apy` field, which is the TOTAL (base vault APR + boost) and would double-count the
+// base supply rate that the reserve curve already models.
+function naviSupplyBoostApr(pool: Record<string, unknown>): number {
+  const incentive = pool.supplyIncentiveApyInfo as Record<string, unknown> | undefined;
+  return numberOr(incentive?.boostedApr, 0);
 }
 
 // NAVI's rate factors are RAY-scaled (1e27); /1e25 yields percent (matches the
@@ -445,8 +468,10 @@ function buildNaviCurve(
     candidate.push({ util: 1, apr: baseApr + multiplier + jump });
   }
 
-  const incentive = pool.supplyIncentiveApyInfo as Record<string, unknown> | undefined;
-  const rewardSupplyApr = numberOr(incentive?.apy, 0);
+  // NAVI's `apy` field is the TOTAL supply APY (vaultApr + boostedApr), so adding it
+  // on top of the curve-derived base supply rate would double-count the base. The
+  // reward is the incremental incentive portion only: `boostedApr`.
+  const rewardSupplyApr = naviSupplyBoostApr(pool);
 
   // Remaining deposit headroom from USD cap, scale-safe.
   const capUsd = numberOr(pool.poolSupplyCapValue, Number.NaN);

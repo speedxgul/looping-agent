@@ -44,6 +44,9 @@ So even cross-package, a raw `Coin` can never escape: the only way to obtain one
 verified release, and the only way to discharge its ticket is to custody a position. The
 owner redeems via each adapter's `owner_redeem` (OwnerCap-gated; the agent never can).
 
+**Status: built + deployed live on Sui mainnet** (all three protocols, incl. NAVI via its
+AccountCap — so NAVI *is* non-custodial here). Package ids in `../deployments/mainnet-v2.env`.
+
 ## Building
 
 Each package is independent — build from its own directory:

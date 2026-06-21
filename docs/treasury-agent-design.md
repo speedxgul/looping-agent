@@ -6,6 +6,17 @@
 > re-checked on-chain against your limits, and leaves the deposit receipt locked
 > inside your vault.
 
+> **Implementation status.** The off-chain **multi-agent autonomous system** is live
+> in production on Sui mainnet — two decision engines (an LLM main agent and a
+> six-subagent yield-looping pipeline) executing real supply/withdraw/borrow/repay on
+> Suilend, NAVI, and Scallop under deterministic caps, allowlists, and health-factor
+> guards (see [`architecture.md`](architecture.md) and
+> [`subagent-pipeline.md`](subagent-pipeline.md)). The on-chain modules below
+> (`capability`, `decision`, `enclave`) are built and tested; the
+> receipt-custody upgrade (`verified_supply`) that closes the last custody gap is the
+> active roadmap item. This document is the **target architecture** for that
+> non-custodial, TEE-attested end state.
+
 ## Contents
 
 **I · Concept** — [Why this exists](#1-why-this-exists) · [Mental model](#2-the-mental-model) · [The two claims](#3-the-two-claims) · [Key terms](#4-key-terms)
@@ -41,11 +52,11 @@ Three parties, and **none can move your funds alone:**
 
 ```mermaid
 flowchart LR
-    Owner(["👤 You<br/>(the owner)"])
-    Vault[("🏦 Treasury<br/>holds your funds")]
-    Agent["🤖 Agent brain<br/>sealed in hardware"]
-    Judge{{"⚖️ Move verifier<br/>on-chain"}}
-    Pool["🌊 DeFi protocol<br/>Suilend / Scallop"]
+    Owner(["You<br/>(the owner)"])
+    Vault[("Treasury<br/>holds your funds")]
+    Agent["Agent brain<br/>sealed in hardware"]
+    Judge{{"Move verifier<br/>on-chain"}}
+    Pool["DeFi protocol<br/>Suilend / Scallop"]
 
     Owner -- "1 · deposit, keep OwnerCap" --> Vault
     Agent -- "2 · signs 'this action is allowed'" --> Judge
@@ -179,17 +190,17 @@ Each protocol hands back a different receipt:
 
 ```mermaid
 flowchart TB
-    subgraph BEFORE["❌ Today — custodial (receipt → agent)"]
+    subgraph BEFORE["Today — custodial (receipt → agent)"]
         direction LR
         c1["Coin out<br/>of vault"] --> p1["Protocol<br/>deposit"]
         p1 --> r1["Receipt<br/>(cap / sCoin)"]
-        r1 --> w1["🤖 Agent wallet<br/><b>agent can withdraw</b>"]
+        r1 --> w1["Agent wallet<br/><b>agent can withdraw</b>"]
     end
-    subgraph AFTER["✅ Target — non-custodial (receipt → Treasury)"]
+    subgraph AFTER["Target — non-custodial (receipt → Treasury)"]
         direction LR
         c2["Coin out<br/>of vault"] --> p2["Protocol<br/>deposit"]
         p2 --> r2["Receipt<br/>(cap / sCoin)"]
-        r2 --> t2["🏦 Treasury<br/><b>only owner can withdraw</b>"]
+        r2 --> t2["Treasury<br/><b>only owner can withdraw</b>"]
     end
     classDef bad fill:#3f1d1d,stroke:#f87171,color:#fff;
     classDef good fill:#064e3b,stroke:#10b981,color:#fff;
@@ -233,7 +244,7 @@ Trace one action through the system by the numbered edges:
 
 ```mermaid
 flowchart TB
-    Owner(["👤 Owner"])
+    Owner(["Owner"])
 
     subgraph OFF["Off-chain host · untrusted transport"]
         LLM["LLM Planner<br/><i>advisory only</i>"]
@@ -241,13 +252,13 @@ flowchart TB
         Monitor["Monitor / Explainer<br/><i>Walrus receipts · X posts</i>"]
     end
 
-    subgraph TEE["🔒 Enclave · AWS Nitro · Marlin Oyster (attested)"]
+    subgraph TEE["Enclave · AWS Nitro · Marlin Oyster (attested)"]
         Strat["Strategist + Validator<br/><i>authenticate inputs · optimizer · bounds</i>"]
-        Signer["Signer 🔑<br/><i>signs ActionIntent · key never leaves</i>"]
+        Signer["Signer <br/><i>signs ActionIntent · key never leaves</i>"]
         Strat --> Signer
     end
 
-    subgraph CHAIN["⛓️ Sui · on-chain (final authority)"]
+    subgraph CHAIN["Sui · on-chain (final authority)"]
         EncReg["enclave.move<br/><i>registered pk ↔ PCR</i>"]
         Dec["decision.move (verifier)<br/><i>verify sig · nonce</i>"]
         Cap["capability.move<br/><i>caps · expiry · revoke<br/>custodies receipt · verified_supply</i>"]
@@ -280,7 +291,7 @@ re-checks everything; the vault keeps the receipt.
 sequenceDiagram
     actor Owner
     participant Oyster as Marlin Oyster
-    participant Enc as 🔒 Enclave
+    participant Enc as Enclave
     participant EncReg as enclave.move
     participant Cap as capability.move
     participant Sub as Submitter
@@ -314,7 +325,7 @@ the TS/Oyster path; the on-chain half is identical either way.
 ```mermaid
 sequenceDiagram
     participant Plan as Planner (LLM, host)
-    participant Enc as 🔒 Enclave (strategy + signer)
+    participant Enc as Enclave (strategy + signer)
     participant Sub as Submitter (host)
     participant Dec as decision.move
     participant Cap as capability.move
@@ -389,27 +400,27 @@ Four layers, each assuming the ones before it might fail.
 ```mermaid
 flowchart LR
     A(["Action<br/>attempted"]) --> L1
-    subgraph L1["① Attestation"]
+    subgraph L1["1. Attestation"]
         d1["signer is the<br/>PCR-pinned enclave<br/><i>can't swap code</i>"]
     end
-    subgraph L2["② Sealed key"]
+    subgraph L2["2. Sealed key"]
         d2["key lives only in TEE<br/><i>can't extract / puppet</i>"]
     end
-    subgraph L3["③ Verifier + caps"]
+    subgraph L3["3. Verifier + caps"]
         d3["sig · nonce · caps<br/>allow-list · expiry · revoke<br/><i>bounds the blast radius</i>"]
     end
-    subgraph L4["④ Receipt custody"]
+    subgraph L4["4. Receipt custody"]
         d4["receipt owned by Treasury<br/><i>can't divert or self-withdraw</i>"]
     end
-    L1 --> L2 --> L3 --> L4 --> OK(["✅ supplied,<br/>owner-controlled"])
-    L3 -. "fails" .-> STOP(["⛔ abort"])
+    L1 --> L2 --> L3 --> L4 --> OK(["supplied,<br/>owner-controlled"])
+    L3 -. "fails" .-> STOP(["abort"])
     L4 -. "fails" .-> STOP
     classDef layer fill:#0b3d91,stroke:#60a5fa,color:#fff;
     class L1,L2,L3,L4 layer;
 ```
 
-Even if the TEE were compromised (defeating ① and ②), the on-chain caps (③) bound
-how much can move and receipt custody (④) keeps the agent from redeeming to itself.
+Even if the TEE were compromised (defeating 1 and 2), the on-chain caps (3) bound
+how much can move and receipt custody (4) keeps the agent from redeeming to itself.
 The `OwnerCap` revoke kills every future action in one transaction.
 
 ## 12. The sealed key (Seal)
@@ -427,7 +438,7 @@ sequenceDiagram
     actor Admin
     participant Seal as Seal key servers
     participant Approve as seal_approve (Move policy)
-    participant Enc as 🔒 Enclave
+    participant Enc as Enclave
 
     Admin->>Seal: Seal-encrypt(signing seed + strategy weights), gated to the PCR
     Note over Enc: on every boot (admin endpoints)
@@ -439,7 +450,8 @@ sequenceDiagram
         Seal-->>Enc: encrypted key shares → complete_seal_key_load decrypts + caches
         Note over Enc: provision_* decrypts seed/weights · agent now functional
     else modified image (different PCR)
-        Approve-->>Seal: DENY → can't decrypt → can't run or sign (fail-closed)
+        Approve-->>Seal: DENY
+        Note over Enc: can't decrypt → can't run or sign (fail-closed)
     end
 ```
 
@@ -560,7 +572,7 @@ flowchart LR
     S2 -. "repeat ≤ max_loops" .-> B
     S2 --> H{"health factor<br/>≥ floor?"}
     H -- yes --> OK["commit ·<br/>receipt(s) → Treasury"]
-    H -- no --> AB["⛔ abort<br/>whole tx"]
+    H -- no --> AB["abort<br/>whole tx"]
     classDef good fill:#064e3b,stroke:#10b981,color:#fff;
     classDef bad fill:#3f1d1d,stroke:#f87171,color:#fff;
     class OK good;
@@ -600,10 +612,10 @@ capability that gates withdrawal, which the Treasury can hold.**
 
 | Protocol | Receipt | Non-custodial? |
 |---|---|---|
-| Suilend | `ObligationOwnerCap` | ✅ |
-| Scallop | `sCoin` | ✅ |
-| NAVI (default) | none — address-bound | ❌ |
-| NAVI (via `AccountCap`) | sub-account `AccountCap` | ✅ *if* deposited under a Treasury-held cap |
+| Suilend | `ObligationOwnerCap` | |
+| Scallop | `sCoin` | |
+| NAVI (default) | none — address-bound | |
+| NAVI (via `AccountCap`) | sub-account `AccountCap` | *if* deposited under a Treasury-held cap |
 
 So **NAVI is supportable** via its `AccountCap` sub-account model (needs a spike to
 confirm), just not its default flow. Two consequences: the Treasury holds a *set* of

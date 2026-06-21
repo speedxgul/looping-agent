@@ -32,6 +32,8 @@ import { netSupplyApr, type ReserveCurve, solveAllocation } from './allocation.j
 import type { SaveOptions } from './memoryStore.js';
 import { evaluateActionPolicy } from './policy.js';
 import { treasuryToolDefinitions, treasuryToolHandlers } from './treasuryTools.js';
+import { StrategyLedgerStore } from './strategyLedger.js';
+import { buildLoopProposal, claimAndExecuteAcceptedPlan, validateLoopProposal } from './subagents.js';
 
 const PROTOCOLS: LendingProtocol[] = ['suilend', 'navi', 'scallop'];
 
@@ -88,6 +90,7 @@ type ToolHandler = (args: ToolArgs) => Promise<Record<string, unknown>>;
 
 export function createToolRegistry({ config, clients, logger, memory }: ToolRegistryOptions) {
   const postActionUpdate = async (args: ToolArgs) => handlePostActionUpdate(args, config, clients, memory);
+  const strategyLedgerStore = new StrategyLedgerStore({ config, logger });
 
   const handlers: Record<string, ToolHandler> = {
     get_agent_memory: async () => ({
@@ -269,7 +272,65 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
 
     get_best_supply_target: async () => getBestSupplyTarget(config, clients),
 
-    get_optimal_allocation: async () => getOptimalAllocation(config, clients, memory),
+    get_optimal_allocation: async () => getOptimalAllocation(config, clients, memory, logger),
+
+    get_strategy_ledger: async () => {
+      const ledger = strategyLedgerStore.load();
+      return {
+        ok: true,
+        ledgerPath: strategyLedgerStore.path,
+        updatedAt: ledger.updatedAt,
+        riskLocks: ledger.riskLocks.filter((lock) => lock.active),
+        proposals: ledger.strategyProposals.slice(0, 10),
+        acceptedPlans: ledger.acceptedPlans.slice(0, 10),
+        loopPositions: ledger.loopPositions.slice(0, 10),
+        latestMarketSnapshot: ledger.marketSnapshots[0] ?? null,
+        latestPositionSnapshot: ledger.positionSnapshots[0] ?? null
+      };
+    },
+
+    propose_strategy_plan: async () => {
+      if (!config.loopStrategy.enabled) {
+        return { ok: false, blocked: true, reason: 'LOOP_STRATEGY_ENABLED is false' };
+      }
+
+      let proposalId: string | null = null;
+      let rejectionReason: string | null = null;
+      await strategyLedgerStore.update((ledger) => {
+        const proposal = buildLoopProposal({
+          config,
+          runId: `main-agent-${memory.runId}`,
+          market: ledger.marketSnapshots[0] ?? null,
+          positions: ledger.positionSnapshots[0] ?? null,
+          existingProposalCount: ledger.strategyProposals.length
+        });
+        if (!proposal) {
+          rejectionReason = 'No fresh market/position snapshots or no eligible collateral/target';
+          return;
+        }
+
+        proposal.createdBy = 'main-agent';
+        const validation = validateLoopProposal(proposal, ledger, config);
+        if (!validation.allowed) {
+          proposal.status = 'rejected';
+          proposal.rejectionReason = validation.reason;
+          rejectionReason = validation.reason;
+        }
+        proposalId = proposal.id;
+        ledger.strategyProposals.unshift(proposal);
+      });
+
+      if (!proposalId) {
+        return { ok: false, blocked: true, reason: rejectionReason ?? 'No proposal created' };
+      }
+
+      return {
+        ok: rejectionReason === null,
+        proposalId,
+        rejected: rejectionReason !== null,
+        rejectionReason
+      };
+    },
 
     get_lending_positions: async (args) => {
       if (!config.sui.enabled) {
@@ -291,6 +352,18 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
     lending_withdraw: async (args) => runLendingWrite({ kind: 'withdraw', args, config, clients, memory }),
     lending_borrow: async (args) => runLendingWrite({ kind: 'borrow', args, config, clients, memory }),
     lending_repay: async (args) => runLendingWrite({ kind: 'repay', args, config, clients, memory }),
+
+    claim_and_execute_strategy_plan: async (args) =>
+      claimAndExecuteAcceptedPlan({
+        role: 'executor',
+        actor: 'main-agent',
+        runId: `main-agent-${memory.runId}`,
+        planId: readStringArg(args.planId, '') || undefined,
+        config,
+        clients,
+        logger,
+        ledgerStore: strategyLedgerStore
+      }),
 
     // Deprecated Suilend-specific aliases (force protocol=suilend) for back-compat.
     suilend_supply: async (args) =>
@@ -337,7 +410,19 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
           defaultAssets: config.sui.defaultAssets,
           explorerBaseUrl: config.sui.explorerBaseUrl,
           protocols: config.sui.protocols,
-          agentStatePath: memory.statePath
+          agentStatePath: memory.statePath,
+          strategyLedgerPath: strategyLedgerStore.path,
+          loopStrategy: {
+            enabled: config.loopStrategy.enabled,
+            executionEnabled: config.loopStrategy.executionEnabled,
+            useExistingCollateral: config.loopStrategy.useExistingCollateral,
+            collateralAsset: config.loopStrategy.collateralAsset,
+            borrowAsset: config.loopStrategy.borrowAsset,
+            maxBorrowUsd: config.loopStrategy.maxBorrowUsd,
+            borrowCapacityFraction: config.loopStrategy.borrowCapacityFraction,
+            minHealthFactor: config.loopStrategy.minHealthFactor,
+            executionClaimTtlMs: config.loopStrategy.executionClaimTtlMs
+          }
         },
         memory: getMemorySummary(memory.state, config, memory.runId)
       };
@@ -395,6 +480,13 @@ async function runLendingWrite(options: LendingWriteOptions): Promise<Record<str
   const asset = resolveAsset(args, config);
   if (!asset) {
     return blocked('asset is required (or use market shorthand usdc/sui)', config);
+  }
+
+  if (shouldPauseMainAgentCollateralSupply(config, kind, asset)) {
+    return blocked(
+      'Main-agent autonomous collateral supply is paused while loop strategy is enabled; use the shared strategy ledger pipeline instead',
+      config
+    );
   }
 
   const coinType = client.resolveCoinType(asset);
@@ -606,13 +698,29 @@ async function getBestSupplyTarget(config: AppConfig, clients: Clients): Promise
 async function getOptimalAllocation(
   config: AppConfig,
   clients: Clients,
-  memory: AgentMemoryContext
+  memory: AgentMemoryContext,
+  logger: Logger
 ): Promise<Record<string, unknown>> {
   if (!config.sui.enabled) {
     return { ok: false, error: 'Sui lending is disabled' };
   }
   if (!config.agent.walletAddress) {
     return { ok: false, error: 'AGENT_WALLET_ADDRESS is not configured' };
+  }
+  if (
+    config.loopStrategy.enabled &&
+    config.loopStrategy.useExistingCollateral &&
+    !config.loopStrategy.mainAgentSupplyWhenLoopEnabled
+  ) {
+    return {
+      ok: true,
+      asset: config.sui.defaultAssets.usdc,
+      budgetRaw: '0',
+      canSupply: false,
+      allocations: [],
+      reason:
+        'Main-agent autonomous USDC supply is paused while loop strategy is enabled; subagents should evaluate existing collateral via the strategy ledger.'
+    };
   }
 
   // Budget = idle USDC, capped by the treasury supply hints (min idle / max supply).
@@ -663,6 +771,17 @@ async function getOptimalAllocation(
     };
   }
 
+  logger.info('Allocation candidates', {
+    asset: usdcAsset,
+    budgetRaw: budgetRaw.toString(),
+    candidates: curves.map((c) => ({
+      protocol: c.protocol,
+      spotNetApr: round4(netSupplyApr(c, 0n)),
+      rewardSupplyApr: c.rewardSupplyApr
+    })),
+    ...(skipped.length > 0 ? { skipped } : {})
+  });
+
   const allocation = solveAllocation({
     curves,
     budgetRaw,
@@ -699,6 +818,31 @@ async function getOptimalAllocation(
 
   const improvementBps =
     naive && budgetRaw > 0n ? Math.round((allocation.blendedNetApr - naive.netAprIfAllHere) * 100) : 0;
+
+  logger.info('Water-fill allocation', {
+    asset: usdcAsset,
+    budgetRaw: budgetRaw.toString(),
+    legs: legs.map((l) => ({
+      protocol: l.protocol,
+      rawAmount: l.rawAmount,
+      amountFormatted: l.amountFormatted,
+      netSupplyApr: l.netSupplyApr,
+      share: l.share
+    })),
+    blendedNetApr: allocation.blendedNetApr,
+    marginalApr: allocation.marginalApr,
+    allocatedRaw: allocation.allocatedRaw,
+    unallocatedRaw: allocation.unallocatedRaw
+  });
+
+  logger.info('Allocation decision', {
+    funded: legs.map((l) => l.protocol),
+    // At small budgets the dust-prune collapses the split to the single best-APR
+    // pool; this flag makes that explicit on the terminal.
+    winnerTakesAll: legs.length === 1,
+    improvementBpsVsNaive: improvementBps,
+    naive
+  });
 
   return {
     ok: true,
@@ -961,6 +1105,23 @@ function resolveAsset(args: ToolArgs, config: AppConfig): string {
   return '';
 }
 
+function shouldPauseMainAgentCollateralSupply(
+  config: AppConfig,
+  kind: PositionActionKind,
+  asset: string
+): boolean {
+  if (
+    kind !== 'supply' ||
+    !config.loopStrategy.enabled ||
+    !config.loopStrategy.useExistingCollateral ||
+    config.loopStrategy.mainAgentSupplyWhenLoopEnabled
+  ) {
+    return false;
+  }
+
+  return asset.toLowerCase() === config.loopStrategy.collateralAsset.toLowerCase();
+}
+
 function definitions(): OpenAIToolDefinition[] {
   return [
     {
@@ -1081,6 +1242,37 @@ function definitions(): OpenAIToolDefinition[] {
       description:
         "Compute the optimal split of idle USDC across write-enabled protocols using each pool's full reserve rate curve (own-impact aware, water-filling). Returns an allocation vector (protocol + rawAmount per leg), blended and marginal net APR, and the improvement vs the naive highest-APR heuristic. PREFERRED over get_best_supply_target: supply each returned leg via lending_supply.",
       parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
+    },
+    {
+      type: 'function',
+      name: 'get_strategy_ledger',
+      description:
+        'Read the shared strategy ledger: subagent snapshots, strategy proposals, accepted plans, execution receipts, active risk locks, and active loop positions.',
+      parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
+    },
+    {
+      type: 'function',
+      name: 'propose_strategy_plan',
+      description:
+        'Write a deterministic borrow-loop proposal into the shared strategy ledger using the latest market and position snapshots. The ledger remains the primary strategy state.',
+      parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] }
+    },
+    {
+      type: 'function',
+      name: 'claim_and_execute_strategy_plan',
+      description:
+        'Claim one accepted strategy plan in the shared ledger and execute it through the same idempotent path as the executor subagent.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          planId: {
+            type: 'string',
+            description: 'Optional accepted plan id. If omitted, the oldest claimable accepted plan is used.'
+          }
+        },
+        required: []
+      }
     },
     {
       type: 'function',
@@ -1207,6 +1399,8 @@ function definitions(): OpenAIToolDefinition[] {
 }
 
 const WRITE_TOOLS = new Set([
+  'propose_strategy_plan',
+  'claim_and_execute_strategy_plan',
   'lending_supply',
   'lending_withdraw',
   'lending_borrow',
@@ -1218,6 +1412,13 @@ const WRITE_TOOLS = new Set([
 ]);
 
 function redactToolArgs(toolName: string, args: ToolArgs): Record<string, unknown> {
+  if (toolName === 'claim_and_execute_strategy_plan') {
+    return { planId: args.planId };
+  }
+  if (toolName === 'propose_strategy_plan') {
+    return {};
+  }
+
   if (WRITE_TOOLS.has(toolName)) {
     return {
       protocol: args.protocol,

@@ -125,6 +125,45 @@ describe('lending_supply routing', () => {
     expect(result.ok).toBe(true);
     expect(supplyCalls).toEqual(['scallop']);
   });
+
+  test('blocks autonomous collateral supply while loop strategy owns existing collateral', async () => {
+    const supplyCalls: string[] = [];
+    const clients = routingClients((protocol) => {
+      supplyCalls.push(protocol);
+    });
+    const config = liveConfig({
+      protocols: {
+        suilend: { enabled: true, write: true },
+        navi: { enabled: true, write: true },
+        scallop: { enabled: true, write: true }
+      }
+    });
+    config.loopStrategy.enabled = true;
+    config.loopStrategy.useExistingCollateral = true;
+    config.loopStrategy.mainAgentSupplyWhenLoopEnabled = false;
+    const registry = createToolRegistry({
+      config,
+      clients,
+      logger: quietLogger(),
+      memory: {
+        state: createEmptyAgentState(config),
+        runId: 'run-1',
+        statePath: 'data/agent-state.json',
+        persist: async () => undefined
+      }
+    });
+
+    const result = await registry.execute({
+      type: 'function_call',
+      name: 'lending_supply',
+      call_id: 'c1',
+      arguments: JSON.stringify({ protocol: 'navi', asset: 'usdc', rawAmount: '500' })
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('strategy ledger');
+    expect(supplyCalls).toEqual([]);
+  });
 });
 
 function routingClients(onSupply: (protocol: string) => void): Clients {
