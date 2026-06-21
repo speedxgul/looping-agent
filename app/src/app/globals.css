@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 :root {
   --background: #0a0e14;
@@ -36,6 +37,57 @@ body {
 ::selection {
   background: #1d4ed8;
   color: #fff;
+}
+
+/* Docs prose: align Tailwind Typography with the app theme */
+.prose-docs {
+  --tw-prose-body: var(--text);
+  --tw-prose-headings: #f1f5f9;
+  --tw-prose-lead: var(--muted);
+  --tw-prose-links: var(--accent);
+  --tw-prose-bold: #f1f5f9;
+  --tw-prose-counters: var(--muted);
+  --tw-prose-bullets: #2a3645;
+  --tw-prose-hr: var(--border);
+  --tw-prose-quotes: var(--muted);
+  --tw-prose-quote-borders: var(--accent);
+  --tw-prose-captions: var(--muted);
+  --tw-prose-code: #e6edf6;
+  --tw-prose-pre-code: #d7dee8;
+  --tw-prose-pre-bg: var(--panel-2);
+  --tw-prose-th-borders: var(--border);
+  --tw-prose-td-borders: var(--border);
+}
+
+.prose-docs a {
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.prose-docs a:hover {
+  border-bottom-color: var(--accent);
+}
+.prose-docs :not(pre) > code {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.85em;
+}
+.prose-docs :not(pre) > code::before,
+.prose-docs :not(pre) > code::after {
+  content: none;
+}
+.prose-docs pre {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+}
+.prose-docs table {
+  display: block;
+  overflow-x: auto;
+}
+.prose-docs th,
+.prose-docs td {
+  padding: 0.5rem 0.75rem;
 }
 
 /* Thin scrollbars for the console feel */

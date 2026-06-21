@@ -116,7 +116,7 @@ sequenceDiagram
     PR->>L: PositionSnapshot (HF, limits, legs)
     LS->>L: read latest snapshots
     LS->>L: LoopStrategyProposal (status: open)
-    Note over LS: pre-validate; mark "rejected" if policy fails
+    Note over LS: pre-validate, mark "rejected" if policy fails
 
     CO->>L: find one open proposal
     CO->>CO: validateLoopProposal (full policy gate)
