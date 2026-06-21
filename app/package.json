@@ -5,7 +5,7 @@
   "description": "Read-only trust console for the Sui treasury agent. Renders the strategy ledger and agent memory.",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/sync-docs.mjs && next build",
     "start": "next start",
     "lint": "next lint"
   },
