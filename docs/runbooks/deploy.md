@@ -69,7 +69,7 @@ curl -s http://$ENCLAVE_IP:1301/attestation/hex | bun run scripts/decode-attesta
 
 Register on-chain. **Split note:** the `enclave` module lives in the framework package, the
 `DECISION` type in core — so the calls take separate `--package` / `--type-args` (the old
-single-package `register-enclave.sh` no longer applies):
+single-package register helper no longer applies — register via the inline PTB below):
 ```bash
 # E4 — create the EnclaveConfig with the measured PCRs (skip if reusing a config with matching PCRs)
 sui client call --package $ENCLAVE_FRAMEWORK_PKG --module enclave --function create_enclave_config \

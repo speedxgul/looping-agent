@@ -52,7 +52,7 @@ public struct DecisionPayload has copy, drop {
 }
 
 /// The full product action schema (design §10). Field order MUST match the BCS in
-/// agent/scripts/gen-action-intent-vector.ts and enclave/app/action_intent.ts.
+/// agent/src/core/actionIntent.ts and enclave/app/action_intent.ts.
 public struct ActionIntent has copy, drop {
     schema_version: u16,
     chain_id: vector<u8>,
