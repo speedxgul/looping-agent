@@ -8,6 +8,15 @@ on-chain, and drive the attested `verified_supply` flow — with **no dev key**.
 > [Completed-run reference](#completed-run-reference) at the bottom; reuse the package, or
 > re-run the whole thing from scratch with the steps below.
 
+> **⚠️ Split architecture (current):** the enclave deploy + attestation (Steps 0–3) are
+> unchanged, but the on-chain registration commands (Steps 4–5) differ — the `enclave` module
+> now lives in its own **framework package** and the `DECISION` type in **core**, so they're
+> separate `--package` / `--type-args`. `register-enclave.sh` (which assumes one package for
+> both) no longer applies; use the inline PTB. See **[`mainnet-deploy.md`](mainnet-deploy.md)
+> Step 3** and **[`move/packages/DEPLOY.md`](../../move/packages/DEPLOY.md) Steps E4–E5** for
+> the exact split commands. Also: `register_enclave_dev` lives under `move/packages/` now (not
+> `move/sources/`), and PCRs are reproducible across re-deploys of the same pinned image.
+
 ## How it works (the part that wasn't obvious)
 
 The Marlin Oyster **blue base image (v3.0.0)** does the key work for us:
