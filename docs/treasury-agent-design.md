@@ -396,13 +396,13 @@ flowchart LR
     subgraph L1["1. Attestation"]
         d1["signer is the<br/>PCR-pinned enclave<br/><i>can't swap code</i>"]
     end
-    subgraph L2["2 Sealed key"]
+    subgraph L2["2. Sealed key"]
         d2["key lives only in TEE<br/><i>can't extract / puppet</i>"]
     end
-    subgraph L3["3 Verifier + caps"]
+    subgraph L3["3. Verifier + caps"]
         d3["sig · nonce · caps<br/>allow-list · expiry · revoke<br/><i>bounds the blast radius</i>"]
     end
-    subgraph L4["4 Receipt custody"]
+    subgraph L4["4. Receipt custody"]
         d4["receipt owned by Treasury<br/><i>can't divert or self-withdraw</i>"]
     end
     L1 --> L2 --> L3 --> L4 --> OK(["supplied,<br/>owner-controlled"])

@@ -8,7 +8,7 @@ enforcement layer:
 - a **six-subagent pipeline** — rate-scout, position-risk, loop-strategist,
 coordinator, executor, and unwind-guard, cooperating through a shared strategy ledger
 to run **single-depth USDC→SUI yield loops** with no LLM in the fund-moving path
-(see `[../docs/subagent-pipeline.md](../docs/subagent-pipeline.md)`).
+(see [the subagent pipeline doc](../docs/subagent-pipeline.md)).
 
 Local tool adapters perform bounded lending actions:
 
@@ -24,7 +24,7 @@ Local tool adapters perform bounded lending actions:
 - defaults to `DRY_RUN=true`, so it will not post or execute transactions unless explicitly enabled
 
 The off-chain system runs autonomously against live protocols today. The companion  
-on-chain Move package (`[../move/](../move/)`) adds provable non-custodial custody and  
+on-chain Move package ([../move/](../move/)) adds provable non-custodial custody and
 is on the roadmap (receipt-custody `verified_supply`, on-chain bounds verifier).
 
 ## Quick Start
@@ -62,18 +62,18 @@ data/
 ```
 
 This is the `agent/` package of a monorepo. The on-chain Move package lives in
-`[../move/](../move/)` and the docs in `[../docs/](../docs/)`:
-`[architecture.md](../docs/architecture.md)` (what's built),
-`[subagent-pipeline.md](../docs/subagent-pipeline.md)` (the loop pipeline),
-`[autonomy.md](../docs/autonomy.md)`, `[deployment.md](../docs/deployment.md)`,
-`[treasury-agent-design.md](../docs/treasury-agent-design.md)`, and
-`[strategy-research.md](../docs/strategy-research.md)`. All commands here run from
+[`../move/`](../move/) and the docs in [`../docs/`](../docs/):
+[architecture.md](../docs/architecture.md) (what's built),
+[strategies.md](../docs/strategies.md) (strategies + math),
+[subagent-pipeline.md](../docs/subagent-pipeline.md) (the loop pipeline),
+[autonomy.md](../docs/autonomy.md), [deployment.md](../docs/deployment.md), and
+[treasury-agent-design.md](../docs/treasury-agent-design.md). All commands here run from
 `agent/`, or from the repo root via the passthrough scripts.
 
 ## Behavior
 
 The system runs two engines. `bun run run:supervisor` runs both together; the loop
-pipeline is documented in `[../docs/subagent-pipeline.md](../docs/subagent-pipeline.md)`.
+pipeline is documented in [the subagent pipeline doc](../docs/subagent-pipeline.md).
 `bun run run:once` performs one **main-agent** loop:
 
 1. Loads agent memory from the configured backend (local file or Walrus) and injects a summary into the prompt. When MemWal is enabled, relevant long-term memories are recalled and injected too.
@@ -129,7 +129,7 @@ Derive your Sui address from the configured key:
 bun run account:address
 ```
 
-`AGENT_SUI_PRIVATE_KEY` must be a **hex private key** (`0x` + 64 hex chars) or a `**suiprivkey1…`** bech32 key — not a mnemonic or wallet address.
+`AGENT_SUI_PRIVATE_KEY` must be a **hex private key** (`0x` + 64 hex chars) or a **`suiprivkey1…`** bech32 key — not a mnemonic or wallet address.
 
 ## Walrus Memory & Verifiable Storage
 

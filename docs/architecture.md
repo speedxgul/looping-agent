@@ -115,6 +115,8 @@ accounting for the fact that my own deposit pushes the rate down?"*
 - Returns concrete per-protocol supply legs for the main agent (via
   `get_optimal_allocation`) or the pipeline to execute.
 
+See [`strategies.md`](strategies.md) §2 for the full derivation and solver.
+
 ### `src/core/policy.ts` — risk enforcement
 
 The central gate. Every write action — `LENDING_SUPPLY`, `LENDING_WITHDRAW`,
@@ -172,6 +174,8 @@ Wires the clients and dispatches commands: `run-once`, `run-daemon` (main agent 
 
 ## 3. Strategies — what works today
 
+> Full formulas and the optimizer math are in [`strategies.md`](strategies.md).
+
 | Strategy | Engine | Status |
 |---|---|---|
 | **Idle-USDC allocation** (own-impact-aware split across protocols) | Main agent + `allocation.ts` | working |
@@ -179,7 +183,7 @@ Wires the clients and dispatches commands: `run-once`, `run-daemon` (main agent 
 | **Yield looping** (supply USDC → borrow SUI → re-supply SUI elsewhere) | Subagent pipeline | working, **single depth only** (`LOOP_MAX_DEPTH=1`) |
 | **Auto-repay** when health factor drops | Health guard | working |
 | Multi-depth recursive looping (depth > 1) | — | not supported (validator rejects) |
-| Market-making, CLMM LP, cross-DEX arbitrage, liquidations | — | not built (see [`strategy-research.md`](strategy-research.md)) |
+| Market-making, CLMM LP, cross-DEX arbitrage, liquidations | — | not built (future roadmap) |
 
 The loop strategy is **hardwired to USDC collateral and SUI borrow** and requires the
 SUI re-supply target to be a *different* protocol from the collateral protocol.

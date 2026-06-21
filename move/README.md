@@ -48,6 +48,5 @@ replay/stale-nonce aborts); `capability.move` tests cover release within cap, ov
 per-tx cap, over rolling cap, after revoke, and owner principal withdrawal.
 
 See [`../docs/treasury-agent-design.md`](../docs/treasury-agent-design.md) for the full
-verifiability/attestation design, [`../docs/subagent-pipeline.md`](../docs/subagent-pipeline.md)
-for the off-chain strategy engine, and [`../docs/strategy-research.md`](../docs/strategy-research.md)
-for the strategy the verifier bounds.
+verifiability/attestation design and [`../docs/subagent-pipeline.md`](../docs/subagent-pipeline.md)
+for the off-chain strategy engine.

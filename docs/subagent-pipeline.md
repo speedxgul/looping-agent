@@ -33,7 +33,9 @@ flowchart LR
 ```
 
 The loop is profitable when the SUI **supply** APR on the target protocol exceeds the
-SUI **borrow** APR on the collateral protocol by at least `LOOP_MIN_NET_APR_BPS`.
+SUI **borrow** APR on the collateral protocol by at least `LOOP_MIN_NET_APR_BPS`. The
+exact net-APR, sizing, and projected-health-factor formulas are in
+[`strategies.md`](strategies.md) §4.
 
 **Two proposal shapes** (`StrategyProposalType`):
 
@@ -245,7 +247,7 @@ executes on-chain only when both the dry-run and loop-execution flags are set.
 | `EXECUTOR_INTERVAL_MS` | `60000` | executor cadence. |
 | `UNWIND_GUARD_INTERVAL_MS` | `60000` | unwind-guard cadence. |
 | `SUPERVISOR_ROLES` | all seven | Which roles the supervisor runs (`main` + six subagents). |
-| `LOOP_LEDGER_PATH` | `data/strategy-ledger.json` | Ledger file location. |
+| `STRATEGY_LEDGER_PATH` | `data/strategy-ledger.json` | Ledger file location. |
 
 ---
 

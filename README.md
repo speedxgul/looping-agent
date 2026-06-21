@@ -10,7 +10,7 @@ cryptographically verify. The LLM plans and explains; a deterministic layer move
 | [`agent/`](agent/) | Off-chain TypeScript agent (the "brain"): an LLM tool-calling loop **and** a six-subagent yield-looping pipeline, the own-impact-aware optimizer, policy, health guard, Suilend/NAVI/Scallop read+write clients, Walrus/MemWal memory. Self-contained Bun package. |
 | [`move/`](move/) | On-chain Sui Move package (the choke-point). Built + tested: scoped revocable capability (`capability.move`), enclave-signature verifier (`decision.move`), PCR-pinned attestation (`enclave.move`). Roadmap: receipt-custody `verified_supply` and on-chain bounds `verifier`. |
 | [`enclave/`](enclave/) | TEE app (AWS Nitro / Marlin Oyster) for the attested strategy + signer — roadmap M3–M4. |
-| [`docs/`](docs/) | [`architecture.md`](docs/architecture.md) (what's built), [`subagent-pipeline.md`](docs/subagent-pipeline.md) (the loop pipeline), [`autonomy.md`](docs/autonomy.md), [`treasury-agent-design.md`](docs/treasury-agent-design.md) (TEE-verified custody design), [`strategy-research.md`](docs/strategy-research.md), [`deployment.md`](docs/deployment.md). |
+| [`docs/`](docs/) | [`architecture.md`](docs/architecture.md) (what's built), [`strategies.md`](docs/strategies.md) (strategies + math), [`subagent-pipeline.md`](docs/subagent-pipeline.md) (the loop pipeline), [`autonomy.md`](docs/autonomy.md), [`treasury-agent-design.md`](docs/treasury-agent-design.md) (TEE-verified custody design), [`deployment.md`](docs/deployment.md). |
 
 ## Quick start
 
