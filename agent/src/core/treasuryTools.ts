@@ -6,7 +6,12 @@
 // present, so the existing wallet tools stay intact behind the flag.
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeStructTag } from '@mysten/sui/utils';
-import { TreasuryClient as TC } from '../clients/chain/treasuryClient.js';
+import {
+  formatEnclaveAttestation,
+  formatTreasuryStatus,
+  formatVerifiedSupplyResult,
+  TreasuryClient as TC
+} from '../clients/chain/treasuryClient.js';
 import type { AppConfig, Clients, LendingProtocol, Logger, OpenAIToolDefinition } from '../types.js';
 import type { ReserveCurve } from './allocation.js';
 import { supplyLegsNeedingRefresh } from './oracleRefresh.js';
@@ -128,6 +133,11 @@ export function treasuryToolHandlers({
     // What the vault lets the agent deploy right now (on-chain budget + authority).
     get_treasury_status: async () => {
       const b = await treasury.readBudget(Date.now());
+      const positions = await treasury.readPositions().catch(() => []);
+      // Demo/observability: show the vault state (balance · caps · agent · custody) clearly.
+      console.log(
+        formatTreasuryStatus({ treasuryId: treasury.treasuryId, state: b.state, budget: b, positions })
+      );
       return {
         ok: true,
         treasuryId: treasury.treasuryId,
@@ -169,6 +179,26 @@ export function treasuryToolHandlers({
         timestampMs: TS
       });
       const legs = decided.legs;
+
+      // Demo/observability: surface the TEE attestation (the on-chain registered signing key
+      // + the PCR code-measurement the contract enforces) and the signed allocation right when
+      // the enclave returns its decision. Best-effort — never blocks the supply.
+      const attestation = await treasury.readEnclaveAttestation().catch(() => null);
+      if (attestation) {
+        console.log(
+          formatEnclaveAttestation(attestation, {
+            enclaveUrl: treasury.enclaveUrl,
+            decidePublicKey: decided.publicKey,
+            scheme: decided.scheme,
+            legs: legs.map((l) => ({
+              protocol: TC.protocolName(l.intent.protocolId),
+              amountRaw: l.intent.amount.toString(),
+              nonce: l.intent.nonce.toString(),
+              signature: l.signatureHex
+            }))
+          })
+        );
+      }
 
       // What the TEE actually returned — surfaced so the run report can show the attested decision
       // (the signing pubkey + the water-filling allocation the enclave computed and signed).
@@ -223,9 +253,27 @@ export function treasuryToolHandlers({
           legs: executable.length,
           oracleRefresh: prelude ? 'suilend-reserve' : 'none'
         });
+        // The tx succeeded → the contract verified the enclave signature, adapter allow-list,
+        // nonce, and caps on-chain, and custodied the receipt. Make that explicit for the demo.
+        console.log(
+          formatVerifiedSupplyResult({
+            digest: result.digest,
+            network: config.sui.network,
+            oracleRefresh: prelude ? 'suilend-reserve' : null,
+            legs: executable.map((l) => ({
+              protocol: TC.protocolName(l.intent.protocolId),
+              amount: `${(Number(l.intent.amount) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 6 })} USDC`
+            }))
+          })
+        );
         return { ok: true, submitted: true, digest: result.digest, decision, skipped, enclave };
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
+        // On-chain verification or the protocol leg aborted → the atomic tx reverted, so the
+        // funds were never released from the vault. Surface it clearly (not a silent failure).
+        console.log(
+          `ON-CHAIN VERIFICATION/EXECUTION ABORTED — atomic tx reverted, funds untouched in the vault\n   ${message.slice(0, 200)}`
+        );
         return { ok: false, submitted: false, decision, enclave, error: message.slice(0, 200) };
       }
     }

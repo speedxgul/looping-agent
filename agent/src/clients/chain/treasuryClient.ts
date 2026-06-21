@@ -139,6 +139,10 @@ export interface TreasuryClientOptions {
   agentCapId: string;
   /** Enclave base URL, e.g. http://<ip>:3000. */
   enclaveUrl: string;
+  /** On-chain `Enclave<DECISION>` object id — its `pk` is the key the contract trusts. */
+  enclaveId?: string;
+  /** On-chain `EnclaveConfig` object id — holds the pinned PCR0/1/2/16 (code identity). */
+  enclaveConfigId?: string;
   /** Injectable fetch (for tests). */
   fetchImpl?: typeof fetch;
 }
@@ -152,6 +156,119 @@ export interface DecideResult {
   /** The water-filling allocation the enclave computed (per-protocol split + blended APR). */
   // biome-ignore lint/suspicious/noExplicitAny: enclave allocation passthrough
   allocation: any;
+}
+
+/** The TEE identity the contract enforces: the registered signing key + pinned PCR
+ *  measurements (the code identity an attested enclave must match). */
+export interface EnclaveAttestation {
+  enclaveId: string;
+  /** secp256k1 public key registered on-chain (`Enclave<DECISION>.pk`). */
+  publicKeyHex: string;
+  configId: string;
+  configName: string;
+  /** PCR0/1/2/16 from the on-chain `EnclaveConfig` (hex). Empty if no config id is set. */
+  pcrs: { pcr0: string; pcr1: string; pcr2: string; pcr16: string };
+}
+
+/** Render a human-readable TEE attestation banner for demos/logs. `live` cross-checks the
+ *  on-chain key against the `/decide` signer and appends the signed allocation legs. */
+export function formatEnclaveAttestation(
+  att: EnclaveAttestation,
+  live?: {
+    enclaveUrl?: string;
+    decidePublicKey?: string;
+    scheme?: string;
+    legs?: Array<{ protocol: string; amountRaw: string; nonce: string; signature: string }>;
+  }
+): string {
+  const bar = '═'.repeat(72);
+  const norm = (h: string) => h.replace(/^0x/, '').toLowerCase();
+  const trunc = (h: string, head: number, tail: number) =>
+    h.length > head + tail + 1 ? `${h.slice(0, head)}…${h.slice(-tail)}` : h;
+  const out: string[] = [bar, '  TEE ATTESTATION — Marlin Oyster enclave (secp256k1)', bar];
+  if (live?.enclaveUrl) out.push(`  enclave url     ${live.enclaveUrl}`);
+  out.push(`  object (chain)  ${att.enclaveId}`);
+  const match = live?.decidePublicKey
+    ? norm(live.decidePublicKey) === norm(att.publicKeyHex)
+      ? '   — matches /decide signer'
+      : '   — MISMATCH vs /decide signer'
+    : '';
+  out.push(`  signing key     ${att.publicKeyHex}${match}`);
+  if (att.configId) out.push(`  config          ${att.configName} (${trunc(att.configId, 10, 6)})`);
+  if (att.pcrs.pcr0) {
+    out.push(`  ${'─'.repeat(18)} PCRs · code identity pinned on-chain ${'─'.repeat(15)}`);
+    out.push(`  PCR0  ${att.pcrs.pcr0 || '(not pinned)'}`);
+    out.push(`  PCR1  ${att.pcrs.pcr1 || '(not pinned)'}`);
+    out.push(`  PCR2  ${att.pcrs.pcr2 || '(not pinned)'}`);
+    out.push(`  PCR16 ${att.pcrs.pcr16 || '(not pinned)'}`);
+  }
+  if (live?.legs?.length) {
+    out.push(
+      `  ${'─'.repeat(20)} signed allocation · scheme ${live.scheme || 'secp256k1'} ${'─'.repeat(12)}`
+    );
+    live.legs.forEach((l, i) => {
+      out.push(
+        `  leg ${i + 1}  ${l.protocol.toUpperCase().padEnd(8)} amount ${l.amountRaw.padStart(10)}  nonce ${trunc(l.nonce, 6, 4)}  sig ${trunc(l.signature, 14, 6)}`
+      );
+    });
+  }
+  out.push(bar);
+  return out.join('\n');
+}
+
+/** Render the post-submission confirmation. A successful `verified_supply` tx IS the proof
+ *  the contract verified the TEE signature, adapter allow-list, nonce, and caps on-chain —
+ *  and custodied the receipt in the Treasury. */
+export function formatVerifiedSupplyResult(opts: {
+  digest: string;
+  network?: string;
+  legs: Array<{ protocol: string; amount: string }>;
+  oracleRefresh?: string | null;
+}): string {
+  const bar = '═'.repeat(72);
+  const net = opts.network ?? 'mainnet';
+  const out: string[] = [
+    bar,
+    '  ON-CHAIN VERIFICATION PASSED — allocation executed & custodied',
+    bar,
+    '  checks passed   enclave sig · adapter allow-list · nonce · caps',
+    `  legs executed    ${opts.legs.length}  (${opts.legs.map((l) => `${l.protocol.toUpperCase()} ${l.amount}`).join(' · ')})`,
+    '  receipts         custodied in Treasury — owner-only withdrawal'
+  ];
+  if (opts.oracleRefresh && opts.oracleRefresh !== 'none')
+    out.push(`  oracle refresh   ${opts.oracleRefresh}`);
+  out.push(`  tx               ${opts.digest}`);
+  out.push(`  explorer         https://suiscan.xyz/${net}/tx/${opts.digest}`);
+  out.push(bar);
+  return out.join('\n');
+}
+
+/** Render the on-chain treasury vault state: idle balance, deployable budget, caps, agent
+ *  authority, and custodied positions — the "what the agent is allowed to do" snapshot. */
+export function formatTreasuryStatus(opts: {
+  treasuryId: string;
+  state: TreasuryState;
+  budget: DeployableBudget;
+  positions?: Array<{ protocol: string }>;
+}): string {
+  const bar = '═'.repeat(72);
+  const usdc = (raw: bigint) =>
+    `${(Number(raw) / 1e6).toLocaleString('en-US', { minimumFractionDigits: 6, maximumFractionDigits: 6 })} USDC`;
+  const { state, budget } = opts;
+  const pos = opts.positions ?? [];
+  const out: string[] = [
+    bar,
+    `  TREASURY VAULT — ${opts.treasuryId}`,
+    bar,
+    `  idle balance     ${usdc(state.fundsRaw)}`,
+    `  deployable now   ${usdc(budget.deployableRaw)}${budget.canSupply ? '' : `   (cannot supply: ${budget.reason})`}`,
+    `  per-tx cap       ${usdc(state.perTxCapRaw)}`,
+    `  period cap       ${usdc(state.periodCapRaw)}   (remaining ${usdc(budget.remainingPeriodRaw)})`,
+    `  agent            ${state.agentCapId ? `ACTIVE  (cap ${state.agentCapId.slice(0, 10)}…)` : 'REVOKED'}`,
+    `  custodied        ${pos.length ? `${pos.map((p) => p.protocol.toUpperCase()).join(', ')}   (${pos.length} position${pos.length > 1 ? 's' : ''})` : 'none'}`,
+    bar
+  ];
+  return out.join('\n');
 }
 
 /** Market data + intent context the enclave needs to decide an allocation. */
@@ -173,13 +290,56 @@ export class TreasuryClient {
   readonly treasuryId: string;
   readonly agentCapId: string;
   readonly enclaveUrl: string;
+  readonly enclaveId: string;
+  readonly enclaveConfigId: string;
 
   constructor(opts: TreasuryClientOptions) {
     this.sui = opts.suiClient;
     this.treasuryId = opts.treasuryId;
     this.agentCapId = opts.agentCapId;
     this.enclaveUrl = opts.enclaveUrl.replace(/\/$/, '');
+    this.enclaveId = opts.enclaveId ?? '';
+    this.enclaveConfigId = opts.enclaveConfigId ?? '';
     this.fetchImpl = opts.fetchImpl ?? fetch;
+  }
+
+  /**
+   * Read the TEE identity the contract enforces: the enclave's registered secp256k1 public
+   * key (`Enclave<DECISION>.pk`) and the PCR0/1/2/16 measurements pinned in its `EnclaveConfig`
+   * (the code identity). Returns null if no enclave object id is configured.
+   */
+  async readEnclaveAttestation(): Promise<EnclaveAttestation | null> {
+    if (!this.enclaveId) return null;
+    const enc = await this.sui.getObject({ id: this.enclaveId, options: { showContent: true } });
+    // biome-ignore lint/suspicious/noExplicitAny: dynamic move content
+    const ef = (enc.data?.content as any)?.fields;
+    if (!ef?.pk) return null;
+    const toHex = (a: number[]) => a.map((b) => b.toString(16).padStart(2, '0')).join('');
+    const att: EnclaveAttestation = {
+      enclaveId: this.enclaveId,
+      publicKeyHex: `0x${toHex(ef.pk)}`,
+      configId: this.enclaveConfigId,
+      configName: '',
+      pcrs: { pcr0: '', pcr1: '', pcr2: '', pcr16: '' }
+    };
+    if (this.enclaveConfigId) {
+      const cfg = await this.sui.getObject({ id: this.enclaveConfigId, options: { showContent: true } });
+      // biome-ignore lint/suspicious/noExplicitAny: dynamic move content
+      const cf = (cfg.data?.content as any)?.fields;
+      if (cf) {
+        att.configName = cf.name ?? '';
+        // `Pcrs` is a positional tuple `Pcrs(v,v,v,v)`, so the RPC names its elements
+        // pos0..pos3. The 4th slot (pos3) holds the value registered as PCR16.
+        const p = cf.pcrs?.fields ?? {};
+        att.pcrs = {
+          pcr0: toHex(p.pos0 ?? []),
+          pcr1: toHex(p.pos1 ?? []),
+          pcr2: toHex(p.pos2 ?? []),
+          pcr16: toHex(p.pos3 ?? [])
+        };
+      }
+    }
+    return att;
   }
 
   /** Read the on-chain Treasury state (funds, caps, expiry, agent active/revoked). */

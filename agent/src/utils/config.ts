@@ -113,6 +113,7 @@ export function loadConfig(): AppConfig {
       agentCapId: readString('TREASURY_AGENT_CAP_ID', ''),
       registryId: readString('TREASURY_REGISTRY_ID', ''),
       enclaveId: readString('TREASURY_ENCLAVE_OBJECT_ID', ''),
+      enclaveConfigId: readString('TREASURY_ENCLAVE_CONFIG_ID', ''),
       enclaveUrl: readString('TREASURY_ENCLAVE_URL', ''),
       protocols: {
         suilend: {

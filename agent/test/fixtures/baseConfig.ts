@@ -82,6 +82,7 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       agentCapId: '',
       registryId: '',
       enclaveId: '',
+      enclaveConfigId: '',
       enclaveUrl: '',
       protocols: {
         suilend: {

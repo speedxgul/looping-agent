@@ -25,7 +25,11 @@ import { NaviClient } from '../src/clients/chain/naviClient.ts';
 import { ScallopClient } from '../src/clients/chain/scallopClient.ts';
 import { SuiExecutionClient } from '../src/clients/chain/suiExecutionClient.ts';
 import { SuilendClient } from '../src/clients/chain/suilendClient.ts';
-import { TreasuryClient } from '../src/clients/chain/treasuryClient.ts';
+import {
+  formatEnclaveAttestation,
+  formatTreasuryStatus,
+  TreasuryClient
+} from '../src/clients/chain/treasuryClient.ts';
 import {
   buildOwnerRedeemMockTx,
   buildOwnerRedeemNaviTx,
@@ -154,15 +158,8 @@ async function cmdStatus() {
     enclaveUrl: ''
   });
   const b = await t.readBudget(Date.now());
-  console.log(`\nTreasury ${treasuryId}`);
-  console.log('  funds(idle)   :', fmt(b.state.fundsRaw), 'USDC');
-  console.log('  deployable    :', fmt(b.deployableRaw), 'USDC');
-  console.log('  per-tx cap    :', fmt(b.state.perTxCapRaw), 'USDC');
-  console.log('  period remain :', fmt(b.remainingPeriodRaw), 'USDC');
-  console.log('  canSupply     :', b.canSupply, b.reason ? `(${b.reason})` : '');
-  console.log('  agent         :', b.state.agentCapId ?? 'REVOKED');
   const pos = await t.readPositions();
-  console.log('  positions     :', pos.length ? pos.map((p) => p.protocol).join(', ') : 'none');
+  console.log(formatTreasuryStatus({ treasuryId, state: b.state, budget: b, positions: pos }));
   for (const p of pos) console.log(`    - ${p.protocol} (id ${p.protocolId}) receipt ${p.receiptObjectId}`);
 }
 
@@ -370,6 +367,24 @@ async function cmdWalletWithdraw(args: Args) {
   console.log('wallet-withdraw ->', res.digest ?? JSON.stringify(res));
 }
 
+/** Print the TEE attestation banner: registered signing key + on-chain PCR measurements. */
+async function cmdAttest() {
+  const t = new TreasuryClient({
+    suiClient: client,
+    treasuryId: env.get('TREASURY') ?? '',
+    agentCapId: env.get('AGENTCAP') ?? '',
+    enclaveUrl: env.get('ENCLAVE_IP') ? `http://${env.get('ENCLAVE_IP')}:3000` : '',
+    enclaveId: req('ENCLAVE_OBJECT'),
+    enclaveConfigId: req('CONFIG')
+  });
+  const att = await t.readEnclaveAttestation();
+  if (!att) {
+    console.log('no enclave found (need ENCLAVE_OBJECT in deployments/mainnet-v2.env)');
+    return;
+  }
+  console.log(formatEnclaveAttestation(att, { enclaveUrl: t.enclaveUrl }));
+}
+
 function cmdSyncEnv() {
   const map: Record<string, string> = {
     TREASURY_MODE: 'true',
@@ -379,6 +394,7 @@ function cmdSyncEnv() {
     TREASURY_ID: req('TREASURY'),
     TREASURY_AGENT_CAP_ID: req('AGENTCAP'),
     TREASURY_ENCLAVE_OBJECT_ID: req('ENCLAVE_OBJECT'),
+    TREASURY_ENCLAVE_CONFIG_ID: req('CONFIG'),
     TREASURY_ENCLAVE_URL: `http://${req('ENCLAVE_IP')}:3000`,
     TREASURY_SCALLOP_ADAPTER_PKG: req('SCALLOP_ADAPTER_PKG'),
     TREASURY_SCALLOP_VERSION_ID: req('SCALLOP_VERSION'),
@@ -431,11 +447,13 @@ async function main() {
       return cmdWithdrawIdle(args);
     case 'wallet-withdraw':
       return cmdWalletWithdraw(args);
+    case 'attest':
+      return cmdAttest();
     case 'sync-env':
       return cmdSyncEnv();
     default:
       console.log(
-        'commands: status | create --fund N [--cap N] | deposit --amount N | withdraw [--protocol p --amount N] [--submit] | withdraw-idle [--amount N] [--submit] | wallet-withdraw --protocol navi --amount N [--submit] | sync-env'
+        'commands: status | create --fund N [--cap N] | deposit --amount N | withdraw [--protocol p --amount N] [--submit] | withdraw-idle [--amount N] [--submit] | wallet-withdraw --protocol navi --amount N [--submit] | attest | sync-env'
       );
       console.log('writes are DRY-RUN unless --submit is passed.');
   }

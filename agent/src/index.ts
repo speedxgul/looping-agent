@@ -58,7 +58,9 @@ async function main() {
             suiClient: new SuiClient({ url: config.sui.rpcUrl, network: config.sui.network }),
             treasuryId: config.treasury.treasuryId,
             agentCapId: config.treasury.agentCapId,
-            enclaveUrl: config.treasury.enclaveUrl
+            enclaveUrl: config.treasury.enclaveUrl,
+            enclaveId: config.treasury.enclaveId,
+            enclaveConfigId: config.treasury.enclaveConfigId
           })
         : null,
     // Anthropic backend when ANTHROPIC_API_KEY is set (Messages API), else OpenAI (Responses API).

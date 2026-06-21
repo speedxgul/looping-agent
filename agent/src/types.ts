@@ -132,6 +132,8 @@ export interface AppConfig {
     registryId: string;
     /** Shared attested `Enclave<DECISION>` object id. */
     enclaveId: string;
+    /** `EnclaveConfig` object id — holds the pinned PCR0/1/2/16 (code identity). */
+    enclaveConfigId: string;
     enclaveUrl: string;
     /**
      * Per-protocol shared-object ids needed to submit a real (non-mock) leg. A protocol's
