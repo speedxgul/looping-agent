@@ -11,11 +11,13 @@
 > six-subagent yield-looping pipeline) executing real supply/withdraw/borrow/repay on
 > Suilend, NAVI, and Scallop under deterministic caps, allowlists, and health-factor
 > guards (see [`architecture.md`](architecture.md) and
-> [`subagent-pipeline.md`](subagent-pipeline.md)). The on-chain modules below
-> (`capability`, `decision`, `enclave`) are built and tested; the
-> receipt-custody upgrade (`verified_supply`) that closes the last custody gap is the
-> active roadmap item. This document is the **target architecture** for that
-> non-custodial, TEE-attested end state.
+> [`subagent-pipeline.md`](subagent-pipeline.md)). The on-chain packages below are
+> **built and deployed live on Sui mainnet** as a split architecture (protocol-free
+> `treasury_core` + per-protocol adapters); the receipt-custody upgrade (`verified_supply`)
+> that closes the custody gap is **done** — proven live across Suilend, NAVI (via
+> `AccountCap`), and Scallop through the autonomous agent. See `move/README.md` and
+> `deploy-runbook.md`. This document covers the full non-custodial, TEE-attested
+> design; the one remaining roadmap item is the on-chain bounds `verifier`.
 
 ## Contents
 
@@ -313,6 +315,13 @@ sequenceDiagram
 `register_enclave` rejects any public key whose PCRs don't match the registered
 measurement — the one check that makes the running code un-swappable.
 
+**Deployment note.** Our enclave runs as a TypeScript/Bun service on **Marlin
+Oyster** (Nitro), and `enclave.move` is the Nautilus-compatible contract vendored
+from the Marlin Oyster demo. It shares the exact on-chain pattern (`EnclaveConfig` /
+`Enclave` / `verify_signature` / `register_enclave`) with Mysten's reference
+Nautilus — which ships a *Rust* enclave plus AWS tooling. We deliberately stay on
+the TS/Oyster path; the on-chain half is identical either way.
+
 ## 9. The runtime loop
 
 ```mermaid
@@ -320,24 +329,31 @@ sequenceDiagram
     participant Plan as Planner (LLM, host)
     participant Enc as Enclave (strategy + signer)
     participant Sub as Submitter (host)
-    participant Dec as decision.move
-    participant Cap as capability.move
-    participant Pool as Suilend / Scallop
+    participant Adp as &lt;protocol&gt;_adapter
+    participant Dec as core::decision
+    participant Cap as core::capability (Treasury)
+    participant Pool as Suilend / Scallop / NAVI
 
     loop every cycle
         Plan-->>Enc: market summary + suggestion (advisory)
         Enc->>Enc: authenticate inputs · run optimizer · check bounds · build ActionIntent
-        Enc->>Enc: sign ActionIntent (key stays in TEE)
+        Enc->>Enc: sign ActionIntent (secp256k1 key stays in TEE)
         Enc-->>Sub: signed ActionIntent
-        Sub->>Dec: PTB → verified_supply(intent, sig, AgentCap)
-        Dec->>Dec: verify enclave sig vs registered pk · check nonce
-        Dec->>Cap: bounds check (per-tx · period · expiry · allow-list · not revoked)
-        alt within bounds
-            Cap->>Pool: deposit
-            Pool-->>Cap: receipt (ObligationOwnerCap / sCoin)
-            Cap->>Cap: CUSTODY receipt in Treasury · emit ActionExecuted
+        Sub->>Adp: PTB → verified_supply_&lt;protocol&gt;_entry(intent, sig, AgentCap)
+        Adp->>Dec: verified_release&lt;C, W&gt;(witness, registry, treasury, enclave, cap, …intent)
+        Dec->>Dec: verify enclave sig vs registered pk · consume nonce (replay)
+        Dec->>Dec: witness W == adapter registered for protocol_id (on-chain allow-list)
+        Dec->>Cap: bounds check (per-tx · period · expiry · not revoked)
+        alt all checks pass
+            Cap-->>Dec: Coin&lt;C&gt; + ReleaseTicket (hot-potato, no abilities)
+            Dec-->>Adp: Coin&lt;C&gt; + ReleaseTicket
+            Note over Adp,Cap: ReleaseTicket has no abilities — the ONLY<br/>way to consume it is to custody a receipt
+            Adp->>Pool: supply Coin&lt;C&gt;
+            Pool-->>Adp: receipt (sCoin / AccountCap / ObligationOwnerCap)
+            Adp->>Cap: discharge ticket — custody_new / borrow_for_ticket + discharge_existing
+            Cap->>Cap: CUSTODY receipt as dynamic field of Treasury · emit ActionExecuted
             Cap-->>Sub: receipt event (→ Walrus / X)
-        else any check fails
+        else any check fails (sig · witness · nonce · bounds)
             Cap-->>Sub: ABORT — funds untouched
         end
     end
@@ -419,28 +435,42 @@ The `OwnerCap` revoke kills every future action in one transaction.
 ## 12. The sealed key (Seal)
 
 Attestation stops a swapped image from producing valid signatures. Seal stops a
-swapped image from even **starting.**
+swapped image from even **starting** — it withholds the secrets a modified image
+would need to run.
+
+The enclave holds a **second key** for this: an ElGamal *encryption* key (separate
+from its secp256k1 signing key). Seal encrypts to that key, so the relaying host
+never sees plaintext even while it shuttles the request.
 
 ```mermaid
 sequenceDiagram
-    actor Owner
+    actor Admin
     participant Seal as Seal key servers
     participant Approve as seal_approve (Move policy)
     participant Enc as Enclave
 
-    Owner->>Seal: Seal-encrypt(signing seed + strategy weights) to the PCR
-    Note over Enc: on every boot
-    Enc->>Enc: produce attestation (current PCRs)
-    Enc->>Seal: request decryption keys
-    Seal->>Approve: do these PCRs match the registered enclave?
-    alt match
-        Approve-->>Seal: approve → decrypt inside the TEE
-        Note over Enc: same key persists across reboots · strategy stays confidential
+    Admin->>Seal: Seal-encrypt(signing seed + strategy weights), gated to the PCR
+    Note over Enc: on every boot (admin endpoints)
+    Enc->>Seal: init_seal_key_load — FetchKeyRequest (ElGamal pubkey + signed cert)
+    Seal->>Approve: check seal_approve
+    Approve->>Approve: sig over WalletPK intent · key id = vector[0] · sender == wallet pk
+    alt PCR matches the registered enclave
+        Approve-->>Seal: approve
+        Seal-->>Enc: encrypted key shares → complete_seal_key_load decrypts + caches
+        Note over Enc: provision_* decrypts seed/weights · agent now functional
     else modified image (different PCR)
         Approve-->>Seal: DENY
         Note over Enc: can't decrypt → can't run or sign (fail-closed)
     end
 ```
+
+**How `seal_approve` decides (Nautilus + Seal).** It verifies a signature from the
+enclave's ephemeral key over an `IntentMessage` scoped to `WalletPK`, a fixed key id
+`vector[0]`, and that the transaction sender equals the wallet public key — together
+proving only the attested enclave (holding both keys) could have produced the
+request. The enclave loads secrets in three admin steps: `init_seal_key_load` →
+`complete_seal_key_load` (caches the Seal keys) → `provision_*` (decrypts our
+signing seed / strategy weights).
 
 Without Seal a per-boot key is un-extractable but ephemeral. With Seal the key and
 strategy weights are persistent and confidential, released only to the exact
@@ -476,6 +506,13 @@ excluded (address-bound).
 | **M2** | Mock `ActionIntent` signer → `decision.move` verify → Submitter PTB → testnet flow (deposit → supply → receipt → revoke) | #2 verified execution, end to end |
 | **M3** | Real Oyster enclave + `register_enclave`; move optimizer in; replace mock signer | #1 can't-swap / can't-extract; attested decision |
 | **M4** | Seal-gated key + weights (`seal_approve` only to the registered PCR) | completes #1: persistent, confidential, fail-closed |
+
+> **Status (2026-06-21):** **M0–M3 complete and proven live on Sui testnet with real
+> Nitro attestation** — the enclave runs on Marlin Oyster, `register_enclave` binds its
+> in-TEE key after on-chain cert-chain + PCR verification, and the enclave both *signs* and
+> *decides* (optimizer in the TEE) actions the chain verifies. M4 (`seal_approve`) is
+> scaffolded + tested; live Seal provisioning and the real Suilend adapter remain. Deploy +
+> attestation runbook: [`deploy-runbook.md`](deploy-runbook.md).
 
 ## 15. Lanes
 
@@ -608,9 +645,12 @@ PTB-composed-with-final-assertion fallback (§20 Q4).
 ## 19. Non-goals
 
 Attested backtesting; borrowing/looping for user funds; multi-protocol templates;
-NAVI; full on-chain Nitro cert-chain verification (v1 verifies off-chain at
-registration, stores the pubkey on-chain); a pooled multi-user share vault; a
-trust-console UI.
+NAVI; a pooled multi-user share vault; a trust-console UI.
+
+> Previously a non-goal, now **achieved in v1:** full *on-chain* Nitro cert-chain
+> verification. `register_enclave` parses the attestation with Sui's
+> `nitro_attestation::load_nitro_attestation`, which verifies the COSE signature and the
+> cert chain to the AWS Nitro root on-chain (not just off-chain at registration).
 
 ## 20. Open questions
 

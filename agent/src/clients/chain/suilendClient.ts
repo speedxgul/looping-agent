@@ -59,6 +59,11 @@ export class SuilendClient implements LendingProtocolClient {
       return this.context;
     }
 
+    // @suilend/sdk 3.x speaks the new core-client API (getObject({ objectId, include })) — i.e. it
+    // needs a gRPC/GraphQL client, NOT the legacy JSON-RPC SuiClient ({ id, options }). That's
+    // already satisfied: `this.execution.client` is a `SuiGrpcClient` (see SuiExecutionClient), so
+    // we pass it straight through. (A standalone script that hands the SDK a `new SuiClient(...)`
+    // would instead throw "Invalid Sui Object id" — use a SuiGrpcClient there too.)
     const client = await SuilendSdkClient.initialize(
       LENDING_MARKET_ID,
       LENDING_MARKET_TYPE,
@@ -67,6 +72,26 @@ export class SuilendClient implements LendingProtocolClient {
     const { reserveMap } = await initializeSuilend(this.execution.client, client);
     this.context = { client, reserveMap };
     return this.context;
+  }
+
+  /**
+   * Prepend a single-reserve price refresh to `tx` for the non-custodial treasury supply
+   * PTB. Suilend's deposit recomputes ctoken value against the reserve price and aborts if
+   * it's stale, so a `refresh_reserve_price` must run earlier in the SAME PTB (PTB commands
+   * execute in order). Reuses the SDK's `refreshReservePrices`, which reads the on-chain
+   * Pyth `PriceInfoObject` for the asset (kept fresh by Pyth's pushers; for belt-and-braces
+   * a `pyth::update_price_feeds` with Hermes data — see pythClient — can be prepended ahead
+   * of this). Returns the same `tx` for chaining. Mainnet-gated: needs the asset's
+   * PriceInfoObject id + reserve index, which only exist on mainnet (no-op on testnet/mock).
+   */
+  async addReserveRefresh(
+    tx: Transaction,
+    priceInfoObjectId: string,
+    reserveArrayIndex: bigint
+  ): Promise<Transaction> {
+    const { client } = await this.getContext();
+    await client.refreshReservePrices(tx, priceInfoObjectId, reserveArrayIndex);
+    return tx;
   }
 
   isAssetAllowed(coinType: string): boolean {

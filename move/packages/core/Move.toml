@@ -1,0 +1,11 @@
+[package]
+name = "treasury_core"
+edition = "2024"
+
+# Protocol-FREE core: capability + decision + seal_policy. Depends only on the enclave
+# library — never on any lending protocol. Each protocol lives in its own adapter package
+# that depends on this core, so no single package ever sees two protocols' (conflicting)
+# transitive dep graphs. Pure new-style (no [addresses]).
+[dependencies]
+enclave = { local = "../enclave" }
+

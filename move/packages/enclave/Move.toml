@@ -1,0 +1,11 @@
+[package]
+name = "enclave"
+edition = "2024"
+
+# Pure new-style: NO [addresses] section (that silently marks a package old-style and
+# blocks depending on the new-style Sui framework). The package's own address is managed
+# automatically. mainnet/testnet are system environments (auto-provided by the CLI), so no
+# [environments] block is needed to publish there; publish records into Published.toml, which
+# dependents read to link the on-chain package. (Localnet needs a declared env — see
+# ../../../docs/deploy-runbook.md.)
+

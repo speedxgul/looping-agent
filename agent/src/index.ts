@@ -1,7 +1,10 @@
+import { SuiClient } from '@mysten/sui/client';
 import { NaviClient } from './clients/chain/naviClient.js';
 import { ScallopClient } from './clients/chain/scallopClient.js';
 import { SuiExecutionClient } from './clients/chain/suiExecutionClient.js';
 import { SuilendClient } from './clients/chain/suilendClient.js';
+import { TreasuryClient } from './clients/chain/treasuryClient.js';
+import { AnthropicResponsesClient } from './clients/http/anthropicResponsesClient.js';
 import { OpenAIResponsesClient } from './clients/http/openaiResponsesClient.js';
 import { XClient } from './clients/http/xClient.js';
 import { WalrusBlobClient } from './clients/storage/walrusBlobClient.js';
@@ -47,12 +50,33 @@ async function main() {
       config,
       logger
     }),
-    openai: new OpenAIResponsesClient({
-      apiKey: config.openai.apiKey,
-      baseUrl: config.openai.baseUrl,
-      model: config.openai.model,
-      logger
-    }),
+    // Non-custodial path: present only when treasury mode is configured. The agent reads
+    // the vault budget + custodied positions and relays enclave-signed allocations.
+    treasury:
+      config.treasury.enabled && config.treasury.treasuryId
+        ? new TreasuryClient({
+            suiClient: new SuiClient({ url: config.sui.rpcUrl, network: config.sui.network }),
+            treasuryId: config.treasury.treasuryId,
+            agentCapId: config.treasury.agentCapId,
+            enclaveUrl: config.treasury.enclaveUrl,
+            enclaveId: config.treasury.enclaveId,
+            enclaveConfigId: config.treasury.enclaveConfigId
+          })
+        : null,
+    // Anthropic backend when ANTHROPIC_API_KEY is set (Messages API), else OpenAI (Responses API).
+    openai: config.anthropic.apiKey
+      ? new AnthropicResponsesClient({
+          apiKey: config.anthropic.apiKey,
+          baseUrl: config.anthropic.baseUrl,
+          model: config.anthropic.model,
+          logger
+        })
+      : new OpenAIResponsesClient({
+          apiKey: config.openai.apiKey,
+          baseUrl: config.openai.baseUrl,
+          model: config.openai.model,
+          logger
+        }),
     x: new XClient({
       apiBase: config.x.apiBase,
       userAccessToken: config.x.userAccessToken,

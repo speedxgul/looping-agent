@@ -38,6 +38,11 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       baseUrl: 'https://api.openai.com/v1',
       maxToolRounds: 4
     },
+    anthropic: {
+      apiKey: '',
+      model: 'claude-sonnet-4-6',
+      baseUrl: 'https://api.anthropic.com/v1'
+    },
     x: {
       enablePosting: false,
       userAccessToken: '',
@@ -67,6 +72,35 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         suilend: { enabled: true, write: true },
         navi: { enabled: false, write: false },
         scallop: { enabled: false, write: false }
+      }
+    },
+    treasury: {
+      enabled: false,
+      packageId: '',
+      mockAdapterPackageId: '',
+      treasuryId: '',
+      agentCapId: '',
+      registryId: '',
+      enclaveId: '',
+      enclaveConfigId: '',
+      enclaveUrl: '',
+      protocols: {
+        suilend: {
+          adapterPackageId: '',
+          marketType: '',
+          lendingMarketId: '',
+          reserveArrayIndex: 0,
+          pythPriceInfoObjectId: ''
+        },
+        scallop: { adapterPackageId: '', versionId: '', marketId: '' },
+        navi: {
+          adapterPackageId: '',
+          storageId: '',
+          poolId: '',
+          incentiveV2Id: '',
+          incentiveV3Id: '',
+          assetId: 0
+        }
       }
     },
     walrus: {

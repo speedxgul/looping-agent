@@ -1,0 +1,11 @@
+[package]
+name = "navi_adapter"
+edition = "2024"
+
+# Sees ONLY NAVI's transitive graph + our core. Real published NAVI source via git.
+[dependencies]
+treasury_core = { local = "../core" }
+enclave = { local = "../enclave" }
+lending_core = { git = "https://github.com/naviprotocol/navi-smart-contracts.git", subdir = "lending_core", rev = "main" }
+oracle = { git = "https://github.com/naviprotocol/navi-smart-contracts.git", subdir = "oracle", rev = "main" }
+

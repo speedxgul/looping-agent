@@ -1,0 +1,9 @@
+[package]
+name = "mock_adapter"
+edition = "2024"
+
+# Protocol-free placeholder adapter (testnet/demo). Depends only on core.
+[dependencies]
+treasury_core = { local = "../core" }
+enclave = { local = "../enclave" }
+

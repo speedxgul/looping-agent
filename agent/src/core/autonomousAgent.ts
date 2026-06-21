@@ -322,6 +322,12 @@ function buildInstructions(config: AppConfig): string {
     lines.push('Prefer read-only monitoring when dry-run or position creation is disabled.');
   }
 
+  if (config.treasury.enabled) {
+    lines.push(
+      'NON-CUSTODIAL TREASURY MODE is ON: the funds live in the on-chain Treasury, NOT your wallet — your wallet only pays gas. Use get_treasury_status (deployable budget + whether you are still authorized), get_treasury_positions (positions custodied in the vault), and treasury_supply (the attested enclave decides + signs the allocation; you only submit it). Prefer these over the wallet tools (get_sui_balances / get_optimal_allocation / lending_supply), which move your own wallet funds.'
+    );
+  }
+
   return lines.join('\n');
 }
 

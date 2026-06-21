@@ -1,14 +1,23 @@
-# Deploys the treasury enclave SIGNING service (enclave/app) on Oyster.
-# Build + push the image first (see README "Deploy the signing service"), then
-# replace <your-dockerhub-user> below. The signing service listens on :8080;
-# Oyster's blue enclave image serves the attestation on :1300 automatically.
+# Deploys the treasury enclave SIGNING service (enclave/app) on Marlin Oyster.
+#
+# Key facts (see docs/runbooks/m3-attestation.md for the full process):
+#   - The Oyster blue base image generates a secp256k1 key inside the enclave at
+#     /app/ecdsa.sec and binds its pubkey into the attestation served on :1301
+#     (the :1300 attestation only has the base's ed25519 key). On-chain
+#     `register_enclave` reads :1301. Our app just reads the file to sign — we mount
+#     it read-only below. No DEV key on Oyster.
+#   - `image` MUST be pinned to YOUR pushed DIGEST (not a tag) so PCR16 is
+#     reproducible. The placeholder below is intentionally not deployable — pin it
+#     before deploying. Step 1 of docs/runbooks/m3-attestation.md does this for you:
+#       DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' <reg>/treasury-enclave:repro)
+#       sed -i '' "s@image: docker.io/.*@image: docker.io/${DIGEST}@" docker-compose.yml
+#   - The app serves on :3000 (Oyster convention); attestation on :1300/:1301.
 services:
-  app:
-    image: docker.io/<your-dockerhub-user>/treasury-enclave:latest
+  enclave:
+    image: docker.io/0xmihirsahu/treasury-enclave@sha256:476df8e9c1ba46b685dc067298e272475b30467ff730be75788a8ce58e757846
+    container_name: treasury-enclave
+    restart: unless-stopped
     init: true
     network_mode: host
-    restart: unless-stopped
-    # In a real run, provision the secp256k1 key via Seal instead of a plaintext env.
-    # For a first end-to-end test you can pin the dev key:
-    # environment:
-    #   - ENCLAVE_PRIVATE_KEY=1111111111111111111111111111111111111111111111111111111111111111
+    volumes:
+      - /app/ecdsa.sec:/app/ecdsa.sec:ro

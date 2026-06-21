@@ -5,7 +5,7 @@ dist/
 logs/
 agent/data/*.json
 !agent/data/.gitkeep
-move/build/
+move/packages/**/build
 keeping-progress-track.txt
 derive-key.ts
 .cursor

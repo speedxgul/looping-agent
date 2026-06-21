@@ -33,6 +33,7 @@ import type { SaveOptions } from './memoryStore.js';
 import { evaluateActionPolicy } from './policy.js';
 import { StrategyLedgerStore } from './strategyLedger.js';
 import { buildLoopProposal, claimAndExecuteAcceptedPlan, validateLoopProposal } from './subagents.js';
+import { treasuryToolDefinitions, treasuryToolHandlers } from './treasuryTools.js';
 
 const PROTOCOLS: LendingProtocol[] = ['suilend', 'navi', 'scallop'];
 
@@ -336,6 +337,19 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
         return { ok: false, error: 'Sui lending is disabled' };
       }
       const protocol = parseProtocolArg(args.protocol);
+      // Non-custodial mode: positions live in the on-chain Treasury, not the agent wallet —
+      // report the custodied receipt(s) for this protocol instead of the (empty) wallet read.
+      if (config.treasury.enabled && clients.treasury) {
+        const custodied = (await clients.treasury.readPositions()).filter((p) => p.protocol === protocol);
+        return {
+          ok: true,
+          mode: 'treasury-vault',
+          treasuryId: clients.treasury.treasuryId,
+          protocol,
+          custodied,
+          note: 'Non-custodial mode: funds + positions are held in the on-chain Treasury, not the agent wallet. Use get_treasury_status for the deployable budget and get_treasury_positions for all custodied receipts.'
+        };
+      }
       const positions = await protocolClient(clients, protocol).getPositions(config.agent.walletAddress);
       if (protocol === 'suilend') {
         updateSnapshots(memory.state, {
@@ -428,8 +442,36 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
     }
   };
 
+  // Two mutually-exclusive write flows, switched by TREASURY_MODE:
+  //   - ON  (attested/non-custodial): funds live in the Treasury; the ONLY write path is the
+  //          enclave-attested `treasury_supply`. The wallet `lending_*`/`suilend_*` write tools
+  //          are hidden so the agent can't move its own wallet funds directly.
+  //   - OFF (normal/custodial): the agent supplies its own wallet funds via the SDK-backed
+  //          `lending_*` tools; the treasury tools are absent.
+  // Read tools (rates, positions, balances, allocation) are exposed in both and are
+  // treasury-aware when TREASURY_MODE is on.
+  const treasuryEnabled = config.treasury.enabled && clients.treasury !== null;
+  if (treasuryEnabled) {
+    Object.assign(handlers, treasuryToolHandlers({ config, clients, logger }));
+  }
+
+  // Wallet-direct write tools — suppressed in attested treasury mode.
+  const WALLET_WRITE_TOOLS = new Set([
+    'lending_supply',
+    'lending_withdraw',
+    'lending_borrow',
+    'lending_repay',
+    'suilend_supply',
+    'suilend_withdraw',
+    'suilend_borrow',
+    'suilend_repay'
+  ]);
+
   return {
-    definitions,
+    definitions: (): OpenAIToolDefinition[] =>
+      treasuryEnabled
+        ? [...definitions().filter((d) => !WALLET_WRITE_TOOLS.has(d.name)), ...treasuryToolDefinitions()]
+        : definitions(),
     async execute(toolCall: OpenAIFunctionCallItem): Promise<Record<string, unknown>> {
       const handler = handlers[toolCall.name];
       if (!handler) {
@@ -714,11 +756,25 @@ async function getOptimalAllocation(
     };
   }
 
-  // Budget = idle USDC, capped by the treasury supply hints (min idle / max supply).
-  const balances = await clients.suiExecution.getCoinBalances(config.agent.walletAddress);
-  const usdcRaw = BigInt(balances.usdc.raw);
-  const hints = buildSupplyHints(config, usdcRaw, memory.state);
-  const budgetRaw = BigInt(hints.supplyableRaw);
+  // Budget: in non-custodial treasury mode this is the VAULT's deployable (the agent wallet
+  // holds no USDC by design); the enclave makes the final signed allocation in treasury_supply,
+  // so this is the off-chain preview over the same budget. Otherwise it's wallet idle USDC
+  // capped by min-idle / max-supply.
+  let budgetRaw: bigint;
+  let canSupply: boolean;
+  let supplyReason: string | null;
+  if (config.treasury.enabled && clients.treasury) {
+    const b = await clients.treasury.readBudget(Date.now());
+    budgetRaw = b.deployableRaw;
+    canSupply = b.canSupply;
+    supplyReason = b.reason ?? null;
+  } else {
+    const balances = await clients.suiExecution.getCoinBalances(config.agent.walletAddress);
+    const hints = buildSupplyHints(config, BigInt(balances.usdc.raw), memory.state);
+    budgetRaw = BigInt(hints.supplyableRaw);
+    canSupply = hints.canSupply;
+    supplyReason = hints.reason;
+  }
 
   // Gather the USDC reserve curve from each write-enabled, allowlisted protocol.
   const usdcAsset = config.sui.defaultAssets.usdc;
@@ -755,9 +811,9 @@ async function getOptimalAllocation(
       ok: true,
       asset: usdcAsset,
       budgetRaw: budgetRaw.toString(),
-      canSupply: hints.canSupply,
+      canSupply,
       allocations: [],
-      reason: hints.reason ?? 'No eligible reserve curves to allocate across',
+      reason: supplyReason ?? 'No eligible reserve curves to allocate across',
       skipped
     };
   }
@@ -839,7 +895,7 @@ async function getOptimalAllocation(
     ok: true,
     asset: usdcAsset,
     budgetRaw: budgetRaw.toString(),
-    canSupply: hints.canSupply,
+    canSupply,
     allocations: legs,
     blendedNetApr: allocation.blendedNetApr,
     marginalApr: allocation.marginalApr,

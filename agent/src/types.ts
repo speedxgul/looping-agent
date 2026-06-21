@@ -2,7 +2,17 @@ import type { NaviClient } from './clients/chain/naviClient.js';
 import type { ScallopClient } from './clients/chain/scallopClient.js';
 import type { SuiExecutionClient } from './clients/chain/suiExecutionClient.js';
 import type { SuilendClient } from './clients/chain/suilendClient.js';
-import type { OpenAIResponsesClient } from './clients/http/openaiResponsesClient.js';
+import type { TreasuryClient } from './clients/chain/treasuryClient.js';
+/** The LLM client the agent loop drives — satisfied by both the OpenAI (Responses) and the
+ *  Anthropic (Messages) backed clients. */
+export interface LlmClient {
+  create(params: {
+    instructions: string;
+    input: OpenAIInputItem[];
+    tools: OpenAIToolDefinition[];
+  }): Promise<OpenAIResponse>;
+}
+
 import type { XClient } from './clients/http/xClient.js';
 import type { WalrusBlobClient } from './clients/storage/walrusBlobClient.js';
 import type { WalrusMemoryClient } from './clients/storage/walrusMemoryClient.js';
@@ -45,6 +55,13 @@ export interface AppConfig {
     model: string;
     baseUrl: string;
     maxToolRounds: number;
+  };
+  /** Optional Anthropic backend — when apiKey is set, the agent's LLM client uses Anthropic's
+   *  Messages API instead of OpenAI's Responses API (same tool loop). */
+  anthropic: {
+    apiKey: string;
+    model: string;
+    baseUrl: string;
   };
   x: {
     enablePosting: boolean;
@@ -97,6 +114,54 @@ export interface AppConfig {
       namespace: string;
     };
   };
+  /**
+   * Non-custodial treasury mode. When `enabled`, the agent acts only as Submitter:
+   * funds live in the on-chain `Treasury`, the enclave decides + signs allocations, and
+   * the agent relays them via the attested `verified_supply_*` path (instead of moving
+   * its own wallet funds). Object ids come from `deployments/<network>.env`.
+   */
+  treasury: {
+    enabled: boolean;
+    /** The protocol-free `treasury_core` package (decision + capability + enclave registration). */
+    packageId: string;
+    /** The `mock_adapter` package id (testnet/demo supply). */
+    mockAdapterPackageId: string;
+    treasuryId: string;
+    agentCapId: string;
+    /** Shared `DecisionRegistry` object id. */
+    registryId: string;
+    /** Shared attested `Enclave<DECISION>` object id. */
+    enclaveId: string;
+    /** `EnclaveConfig` object id — holds the pinned PCR0/1/2/16 (code identity). */
+    enclaveConfigId: string;
+    enclaveUrl: string;
+    /**
+     * Per-protocol shared-object ids needed to submit a real (non-mock) leg. A protocol's
+     * legs are only submittable once its ids are filled (otherwise the enclave still
+     * decides them but treasury_supply reports them as skipped). Mainnet object ids.
+     * `adapterPackageId` is the protocol's own adapter package (split architecture).
+     */
+    protocols: {
+      suilend: {
+        adapterPackageId: string;
+        marketType: string;
+        lendingMarketId: string;
+        reserveArrayIndex: number;
+        /** On-chain Pyth `PriceInfoObject` id for the asset; set → reserve refresh is
+         *  prepended to the Suilend supply PTB (mainnet). Empty → no refresh. */
+        pythPriceInfoObjectId: string;
+      };
+      scallop: { adapterPackageId: string; versionId: string; marketId: string };
+      navi: {
+        adapterPackageId: string;
+        storageId: string;
+        poolId: string;
+        incentiveV2Id: string;
+        incentiveV3Id: string;
+        assetId: number;
+      };
+    };
+  };
   loopStrategy: {
     ledgerPath: string;
     enabled: boolean;
@@ -125,7 +190,9 @@ export interface Clients {
   suilend: SuilendClient;
   navi: NaviClient;
   scallop: ScallopClient;
-  openai: OpenAIResponsesClient;
+  /** Present only when treasury mode is enabled (non-custodial path). */
+  treasury: TreasuryClient | null;
+  openai: LlmClient;
   x: XClient;
   walrusBlob: WalrusBlobClient;
   walrusMemory: WalrusMemoryClient;
