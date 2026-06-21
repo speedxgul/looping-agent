@@ -109,11 +109,26 @@ async function buildWithdrawTx(): Promise<Transaction> {
 }
 
 async function main() {
-  const signer = loadSigner(ADDR);
   console.log(`owner: ${ADDR} | protocol: ${PROTOCOL}`);
   console.log('treasury funds before:', await treasuryFunds());
 
   const tx = await buildWithdrawTx();
+  tx.setSender(ADDR);
+
+  if (process.env.SUBMIT !== '1') {
+    const built = await tx.build({ client });
+    const res = await client.dryRunTransactionBlock({ transactionBlock: built });
+    console.log('\nDRY-RUN status:', res.effects.status.status);
+    if (res.effects.status.status !== 'success') console.log('abort:', res.effects.status.error);
+    else {
+      for (const b of res.balanceChanges ?? [])
+        console.log('  would receive:', b.coinType.split('::').pop(), b.amount, '->', b.owner);
+      console.log('✓ would redeem. Re-run with SUBMIT=1 to execute.');
+    }
+    return;
+  }
+
+  const signer = loadSigner(ADDR);
   const r = await client.signAndExecuteTransaction({
     signer,
     transaction: tx,
