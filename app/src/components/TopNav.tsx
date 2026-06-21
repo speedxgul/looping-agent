@@ -25,14 +25,9 @@ export default function TopNav({ variant = 'app' }: { variant?: 'landing' | 'app
             <Link href="/app" className="transition-colors hover:text-text">
               Dashboard
             </Link>
-            <a
-              href="https://github.com"
-              target="_blank"
-              rel="noreferrer"
-              className="transition-colors hover:text-text"
-            >
+            <Link href="/docs" className="transition-colors hover:text-text">
               Docs
-            </a>
+            </Link>
           </div>
         </div>
         <div className="flex items-center gap-3">
