@@ -98,6 +98,20 @@ export function isStale(iso: string | undefined, staleMs: number, now = Date.now
   return now - then > staleMs;
 }
 
+/**
+ * Format a token quantity (already in human units). Position-snapshot legs are
+ * normalized inconsistently across protocols, so the quantity is derived from
+ * amountUsd / price rather than scaling raw base units.
+ */
+export function formatTokenQty(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return '—';
+  if (value === 0) return '0';
+  if (Math.abs(value) >= 1) {
+    return value.toLocaleString('en-US', { maximumFractionDigits: 4 });
+  }
+  return value.toPrecision(4).replace(/\.?0+$/, '');
+}
+
 export function bpsToPct(bps: number | undefined): string {
   if (bps === undefined || Number.isNaN(bps)) return '—';
   return `${(bps / 100).toFixed(2)}%`;

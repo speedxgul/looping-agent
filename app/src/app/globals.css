@@ -7,6 +7,7 @@
   --border: #1e2733;
   --text: #d7dee8;
   --muted: #7c8a9c;
+  --accent: #22d3b8;
 }
 
 @theme inline {
@@ -16,6 +17,8 @@
   --color-border: var(--border);
   --color-text: var(--text);
   --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 

@@ -3,7 +3,6 @@ import {
   EmptyState,
   Panel,
   ProtocolTag,
-  Stat,
   StatusDot,
   Table,
   Td,
@@ -15,6 +14,7 @@ import {
   formatApr,
   formatHealthFactor,
   formatRawAmount,
+  formatTokenQty,
   formatUsd,
   isStale,
   shortAddr,
@@ -185,6 +185,28 @@ export function Positions({ ledger, now }: { ledger: StrategyLedgerV1; now: numb
   const active = protocols.filter(
     (p) => p.depositedAmountUsd > 0 || p.borrowedAmountUsd > 0
   );
+
+  // Position-snapshot leg `rawAmount` is normalized inconsistently across
+  // protocols (NAVI uses 1e9 even for USDC; Suilend/Scallop store human units).
+  // Derive the token quantity from amountUsd / price using the latest market
+  // snapshot prices instead, which is protocol-agnostic and correct.
+  const rates = ledger.marketSnapshots[0]?.rates ?? [];
+  const priceByCoin = new Map<string, number>();
+  const priceBySymbol = new Map<string, number>();
+  for (const r of rates) {
+    if (r.priceUsd > 0) {
+      priceByCoin.set(r.coinType.toLowerCase(), r.priceUsd);
+      priceBySymbol.set(r.asset.toUpperCase(), r.priceUsd);
+    }
+  }
+  const legQty = (leg: { coinType: string; asset: string; amountUsd: number }): number | undefined => {
+    const price =
+      priceByCoin.get(leg.coinType.toLowerCase()) ??
+      priceBySymbol.get(assetSymbol(leg.asset)) ??
+      (/usd[ct]/i.test(leg.asset) ? 1 : undefined);
+    if (price === undefined || price <= 0) return undefined;
+    return leg.amountUsd / price;
+  };
   return (
     <Panel
       title="Positions"
@@ -225,12 +247,12 @@ export function Positions({ ledger, now }: { ledger: StrategyLedgerV1; now: numb
                 <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
                   {p.deposits.map((d, i) => (
                     <Badge key={`d-${i}`} tone="ok">
-                      +{formatRawAmount(d.rawAmount, d.asset)} {d.asset}
+                      +{formatTokenQty(legQty(d))} {assetSymbol(d.asset)}
                     </Badge>
                   ))}
                   {p.borrows.map((b, i) => (
                     <Badge key={`b-${i}`} tone="warn">
-                      -{formatRawAmount(b.rawAmount, b.asset)} {b.asset}
+                      -{formatTokenQty(legQty(b))} {assetSymbol(b.asset)}
                     </Badge>
                   ))}
                 </div>
@@ -245,6 +267,20 @@ export function Positions({ ledger, now }: { ledger: StrategyLedgerV1; now: numb
 
 export function LoopPositions({ ledger, now }: { ledger: StrategyLedgerV1; now: number }) {
   const positions = ledger.loopPositions ?? [];
+
+  // The loop position's rawCollateralAmount can be a protocol-normalized leg
+  // amount (NAVI uses 1e9 even for USDC), so scaling by token decimals is
+  // unreliable. Use the originating proposal's collateralUsd instead.
+  const collateralUsdByProposal = new Map<string, number>();
+  for (const proposal of ledger.strategyProposals) {
+    if (typeof proposal.collateralUsd === 'number') {
+      collateralUsdByProposal.set(proposal.id, proposal.collateralUsd);
+    }
+  }
+  const usdcPrice =
+    ledger.marketSnapshots[0]?.rates.find((r) => r.asset.toUpperCase() === 'USDC' && r.priceUsd > 0)
+      ?.priceUsd ?? 1;
+
   return (
     <Panel title="Loop Positions" count={positions.length}>
       {positions.length === 0 ? (
@@ -262,7 +298,10 @@ export function LoopPositions({ ledger, now }: { ledger: StrategyLedgerV1; now: 
             </>
           }
         >
-          {positions.map((p) => (
+          {positions.map((p) => {
+            const collateralUsd = collateralUsdByProposal.get(p.proposalId);
+            const collateralQty = collateralUsd !== undefined ? collateralUsd / usdcPrice : undefined;
+            return (
             <tr key={p.id} className="border-b border-border/50">
               <Td>
                 <Badge tone={p.status === 'active' ? 'ok' : p.status === 'closed' ? 'muted' : 'info'}>
@@ -275,7 +314,10 @@ export function LoopPositions({ ledger, now }: { ledger: StrategyLedgerV1; now: 
                 <span className="capitalize">{p.supplyTargetProtocol}</span>
               </Td>
               <Td right mono>
-                {formatRawAmount(p.rawCollateralAmount, p.collateralAsset)} {p.collateralAsset}
+                {collateralQty !== undefined
+                  ? formatTokenQty(collateralQty)
+                  : formatRawAmount(p.rawCollateralAmount, p.collateralAsset)}{' '}
+                {p.collateralAsset}
               </Td>
               <Td right mono>
                 {formatRawAmount(p.rawBorrowAmount, p.borrowAsset)} {p.borrowAsset}
@@ -285,7 +327,8 @@ export function LoopPositions({ ledger, now }: { ledger: StrategyLedgerV1; now: 
               </Td>
               <Td right>{timeAgo(p.openedAt, now)}</Td>
             </tr>
-          ))}
+            );
+          })}
         </Table>
       )}
     </Panel>
@@ -616,7 +659,69 @@ export function AgentMemory({ memory, now }: { memory: AgentStateV1; now: number
   );
 }
 
-export function Overview({ ledger, memory }: { ledger: StrategyLedgerV1; memory: AgentStateV1 }) {
+function HighlightCard({
+  title,
+  accent = 'teal',
+  children
+}: {
+  title: string;
+  accent?: 'teal' | 'violet' | 'blue' | 'amber';
+  children: React.ReactNode;
+}) {
+  const ring: Record<string, string> = {
+    teal: 'from-accent/15',
+    violet: 'from-violet-500/15',
+    blue: 'from-blue-500/15',
+    amber: 'from-amber-500/15'
+  };
+  const dot: Record<string, string> = {
+    teal: 'bg-accent',
+    violet: 'bg-violet-400',
+    blue: 'bg-blue-400',
+    amber: 'bg-amber-400'
+  };
+  return (
+    <div
+      className={`rounded-2xl border border-border bg-gradient-to-b ${ring[accent]} to-panel-2 p-4`}
+    >
+      <div className="mb-3 flex items-center gap-2">
+        <span className={`h-1.5 w-1.5 rounded-full ${dot[accent]}`} />
+        <h3 className="font-sans text-xs font-semibold uppercase tracking-wider text-muted">
+          {title}
+        </h3>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function CardRow({
+  left,
+  right,
+  rightTone
+}: {
+  left: React.ReactNode;
+  right: React.ReactNode;
+  rightTone?: 'ok' | 'warn' | 'muted';
+}) {
+  const toneClass =
+    rightTone === 'ok' ? 'text-emerald-400' : rightTone === 'warn' ? 'text-amber-400' : 'text-text';
+  return (
+    <div className="flex items-center justify-between py-1 font-sans text-sm">
+      <span className="truncate text-muted">{left}</span>
+      <span className={`tabular-nums font-medium ${toneClass}`}>{right}</span>
+    </div>
+  );
+}
+
+export function HighlightCards({
+  ledger,
+  memory
+}: {
+  ledger: StrategyLedgerV1;
+  memory: AgentStateV1;
+}) {
+  void memory;
   const pos = ledger.positionSnapshots[0]?.protocols ?? [];
   const totalDeposited = pos.reduce((s, p) => s + (p.depositedAmountUsd || 0), 0);
   const totalBorrowed = pos.reduce((s, p) => s + (p.borrowedAmountUsd || 0), 0);
@@ -626,25 +731,89 @@ export function Overview({ ledger, memory }: { ledger: StrategyLedgerV1; memory:
       if (!Number.isFinite(p.healthFactor)) return min;
       return min === undefined ? p.healthFactor : Math.min(min, p.healthFactor);
     }, undefined);
+
+  const topSupply = [...(ledger.marketSnapshots[0]?.rates ?? [])]
+    .sort((a, b) => b.supplyApr - a.supplyApr)
+    .slice(0, 3);
+
+  const topLoops = [...ledger.strategyProposals]
+    .sort(
+      (a, b) =>
+        (b.netAprBps ?? b.projectedNetAprBps ?? 0) - (a.netAprBps ?? a.projectedNetAprBps ?? 0)
+    )
+    .slice(0, 3);
+
+  const subagentList = Object.values(ledger.subagents);
+  const okCount = subagentList.filter((s) => s.enabled && s.status === 'ok').length;
   const activeLocks = ledger.riskLocks.filter((l) => l.active).length;
-  const openProposals = ledger.strategyProposals.filter((p) => p.status === 'open').length;
+  const activeLoops = ledger.loopPositions.filter((l) => l.status === 'active').length;
 
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-      <Stat label="Deposited" value={formatUsd(totalDeposited)} tone="ok" />
-      <Stat label="Borrowed" value={formatUsd(totalBorrowed)} tone="warn" />
-      <Stat
-        label="Min Health"
-        value={minHf === undefined ? '∞' : formatHealthFactor(minHf)}
-        tone={hfTone(minHf)}
-      />
-      <Stat label="Open Proposals" value={openProposals} />
-      <Stat label="Loop Positions" value={ledger.loopPositions.length} />
-      <Stat
-        label="Risk Locks"
-        value={activeLocks}
-        tone={activeLocks > 0 ? 'error' : 'ok'}
-      />
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <HighlightCard title="Top Supply APY" accent="teal">
+        {topSupply.length === 0 ? (
+          <p className="font-sans text-sm text-muted">No market data.</p>
+        ) : (
+          topSupply.map((r) => (
+            <CardRow
+              key={`${r.protocol}-${r.coinType}`}
+              left={
+                <>
+                  <span className="text-text">{r.asset}</span>{' '}
+                  <span className="capitalize">{r.protocol}</span>
+                </>
+              }
+              right={formatApr(r.supplyApr)}
+              rightTone="ok"
+            />
+          ))
+        )}
+      </HighlightCard>
+
+      <HighlightCard title="Best Loop Net APR" accent="violet">
+        {topLoops.length === 0 ? (
+          <p className="font-sans text-sm text-muted">No proposals yet.</p>
+        ) : (
+          topLoops.map((p) => (
+            <CardRow
+              key={p.id}
+              left={
+                <>
+                  <span className="capitalize">{p.collateralProtocol}</span>
+                  <span className="text-muted"> → </span>
+                  <span className="capitalize">{p.supplyTargetProtocol}</span>
+                </>
+              }
+              right={bpsToPct(p.netAprBps ?? p.projectedNetAprBps)}
+              rightTone="ok"
+            />
+          ))
+        )}
+      </HighlightCard>
+
+      <HighlightCard title="Treasury Positions" accent="blue">
+        <CardRow left="Deposited" right={formatUsd(totalDeposited)} rightTone="ok" />
+        <CardRow left="Borrowed" right={formatUsd(totalBorrowed)} rightTone="warn" />
+        <CardRow
+          left="Min Health Factor"
+          right={minHf === undefined ? '∞' : formatHealthFactor(minHf)}
+          rightTone={hfTone(minHf) === 'ok' ? 'ok' : 'warn'}
+        />
+      </HighlightCard>
+
+      <HighlightCard title="Pipeline Health" accent="amber">
+        <CardRow
+          left="Subagents OK"
+          right={`${okCount} / ${subagentList.length}`}
+          rightTone={okCount === subagentList.length ? 'ok' : 'warn'}
+        />
+        <CardRow left="Active loops" right={activeLoops} />
+        <CardRow
+          left="Risk locks"
+          right={activeLocks}
+          rightTone={activeLocks > 0 ? 'warn' : 'ok'}
+        />
+      </HighlightCard>
     </div>
   );
 }

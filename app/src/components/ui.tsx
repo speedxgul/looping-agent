@@ -12,15 +12,19 @@ export function Panel({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-lg border border-border bg-panel/60 backdrop-blur-sm">
+    <section className="rounded-2xl border border-border bg-panel/60 backdrop-blur-sm">
       <header className="flex items-baseline justify-between gap-3 border-b border-border px-4 py-3">
         <div className="flex items-baseline gap-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-text">{title}</h2>
+          <h2 className="font-sans text-sm font-semibold uppercase tracking-wider text-text">
+            {title}
+          </h2>
           {count !== undefined && (
-            <span className="rounded bg-panel-2 px-1.5 py-0.5 text-xs text-muted">{count}</span>
+            <span className="rounded-full bg-panel-2 px-2 py-0.5 font-sans text-xs text-muted">
+              {count}
+            </span>
           )}
         </div>
-        {subtitle && <span className="text-xs text-muted">{subtitle}</span>}
+        {subtitle && <span className="font-sans text-xs text-muted">{subtitle}</span>}
       </header>
       <div className="p-4">{children}</div>
     </section>

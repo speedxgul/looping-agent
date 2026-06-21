@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AgentMemory,
+  HighlightCards,
   LoopPositions,
   MarketRates,
-  Overview,
   PlansAndReceipts,
   Positions,
   Proposals,
@@ -13,6 +13,7 @@ import {
   SubagentHealth,
   WalrusArchives
 } from './sections';
+import TopNav from './TopNav';
 import { StatusDot } from './ui';
 import { isStale, shortAddr, timeAgo } from '@/lib/format';
 import type { AgentStateV1, StrategyLedgerV1 } from '@/lib/types';
@@ -86,7 +87,9 @@ export default function Dashboard({
   const ledgerStale = isStale(ledger.updatedAt, LEDGER_STALE_MS, now);
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-6">
+    <div className="min-h-screen">
+      <TopNav variant="app" />
+      <div className="mx-auto max-w-7xl px-4 py-6">
       <Header
         ledger={ledger}
         memory={memory}
@@ -100,7 +103,7 @@ export default function Dashboard({
       />
 
       <div className="mt-4">
-        <Overview ledger={ledger} memory={memory} />
+        <HighlightCards ledger={ledger} memory={memory} />
       </div>
 
       <div className="mt-4 grid grid-cols-1 gap-4">
@@ -133,6 +136,7 @@ export default function Dashboard({
         Read-only trust console · data refreshes every {REFRESH_MS / 1000}s · the agent moves funds,
         this console only observes.
       </footer>
+      </div>
     </div>
   );
 }
@@ -163,22 +167,22 @@ function Header({
   const statusLabel = !ledgerOk ? 'no data' : ledgerStale ? 'stale' : 'live';
 
   return (
-    <header className="flex flex-col gap-3 rounded-lg border border-border bg-panel/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+    <header className="flex flex-col gap-3 rounded-2xl border border-border bg-panel/60 p-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
-        <h1 className="flex items-center gap-2 text-lg font-bold text-text">
+        <h1 className="flex items-center gap-2 font-sans text-xl font-semibold tracking-tight text-text">
           {memory.agentName || 'Treasury Agent'}
-          <span className="rounded bg-blue-500/10 px-2 py-0.5 text-xs font-normal text-blue-400">
+          <span className="rounded-full bg-accent/10 px-2.5 py-0.5 font-sans text-xs font-medium text-accent">
             Trust Console
           </span>
         </h1>
-        <p className="mt-1 text-xs text-muted">
+        <p className="mt-1 font-sans text-xs text-muted">
           wallet <span className="text-text">{shortAddr(wallet, 10, 6)}</span>
           {' · '}ledger updated {timeAgo(ledger.updatedAt, now)}
         </p>
       </div>
 
       <div className="flex items-center gap-4">
-        <span className="flex items-center gap-2 text-sm">
+        <span className="flex items-center gap-2 font-sans text-sm">
           <StatusDot tone={tone} />
           <span
             className={
@@ -196,14 +200,12 @@ function Header({
           type="button"
           onClick={onRefresh}
           disabled={refreshing}
-          className="rounded border border-border bg-panel-2 px-3 py-1.5 text-xs text-text transition-colors hover:border-blue-500/40 hover:text-blue-400 disabled:opacity-50"
+          className="rounded-full border border-border bg-panel-2 px-3 py-1.5 font-sans text-xs text-text transition-colors hover:border-accent/40 hover:text-accent disabled:opacity-50"
         >
           {refreshing ? 'refreshing…' : `refreshed ${timeAgo(new Date(lastFetched).toISOString(), now)}`}
         </button>
       </div>
-      {error && (
-        <p className="text-xs text-red-400 sm:absolute">{error}</p>
-      )}
+      {error && <p className="font-sans text-xs text-red-400 sm:absolute">{error}</p>}
     </header>
   );
 }
