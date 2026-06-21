@@ -202,6 +202,7 @@ export interface StrategyLedgerStoreOptions {
   ledgerPath?: string;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
+  staleLockMs?: number;
 }
 
 const SUBAGENT_ROLES: SubagentRole[] = [
@@ -225,12 +226,14 @@ export class StrategyLedgerStore {
   private readonly lockPath: string;
   private readonly lockTimeoutMs: number;
   private readonly lockRetryMs: number;
+  private readonly staleLockMs: number;
 
   constructor(private readonly options: StrategyLedgerStoreOptions) {
     this.ledgerPath = resolveStrategyLedgerPath(options.config, options.ledgerPath);
     this.lockPath = `${this.ledgerPath}.lock`;
     this.lockTimeoutMs = options.lockTimeoutMs ?? 5000;
     this.lockRetryMs = options.lockRetryMs ?? 25;
+    this.staleLockMs = options.staleLockMs ?? 120000;
   }
 
   get path(): string {
@@ -281,6 +284,9 @@ export class StrategyLedgerStore {
         if (!isAlreadyExistsError(error)) {
           throw error;
         }
+        if (this.clearStaleLock()) {
+          continue;
+        }
         if (Date.now() - started > this.lockTimeoutMs) {
           throw new Error(`Timed out waiting for strategy ledger lock at ${this.lockPath}`);
         }
@@ -297,6 +303,69 @@ export class StrategyLedgerStore {
       } catch {
         // Best-effort cleanup; a later timeout makes the stale lock visible.
       }
+    }
+  }
+
+  private clearStaleLock(): boolean {
+    const metadata = this.readLockMetadata();
+    if (!metadata) {
+      return false;
+    }
+
+    const lockAgeMs = Date.now() - metadata.createdAtMs;
+    const ownerIsAlive = metadata.pid !== null && isProcessAlive(metadata.pid);
+    if (ownerIsAlive && lockAgeMs < this.staleLockMs) {
+      return false;
+    }
+
+    if (ownerIsAlive && lockAgeMs < this.staleLockMs * 5) {
+      return false;
+    }
+
+    try {
+      fs.unlinkSync(this.lockPath);
+      this.options.logger.warn('Removed stale strategy ledger lock', {
+        lockPath: this.lockPath,
+        pid: metadata.pid,
+        ageMs: lockAgeMs
+      });
+      return true;
+    } catch (error: unknown) {
+      if (isMissingFileError(error)) {
+        return true;
+      }
+      return false;
+    }
+  }
+
+  private readLockMetadata(): { pid: number | null; createdAtMs: number } | null {
+    try {
+      const stat = fs.statSync(this.lockPath);
+      let pid: number | null = null;
+      let createdAtMs = stat.mtimeMs;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(this.lockPath, 'utf8')) as {
+          pid?: unknown;
+          createdAt?: unknown;
+        };
+        if (typeof parsed.pid === 'number' && Number.isInteger(parsed.pid) && parsed.pid > 0) {
+          pid = parsed.pid;
+        }
+        if (typeof parsed.createdAt === 'string') {
+          const parsedCreatedAt = Date.parse(parsed.createdAt);
+          if (Number.isFinite(parsedCreatedAt)) {
+            createdAtMs = parsedCreatedAt;
+          }
+        }
+      } catch {
+        // Fall back to stat metadata when the lock predates metadata writes or is truncated.
+      }
+      return { pid, createdAtMs };
+    } catch (error: unknown) {
+      if (isMissingFileError(error)) {
+        return null;
+      }
+      return null;
     }
   }
 }
@@ -480,6 +549,27 @@ function pruneLedger(ledger: StrategyLedgerV1): void {
 
 function isAlreadyExistsError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST');
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT');
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error.code === 'ESRCH' || error.code === 'EINVAL')
+    ) {
+      return false;
+    }
+    return true;
+  }
 }
 
 function sleep(ms: number): Promise<void> {

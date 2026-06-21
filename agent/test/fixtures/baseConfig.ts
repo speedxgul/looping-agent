@@ -124,6 +124,7 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       collateralAsset: 'usdc',
       borrowAsset: 'sui',
       maxDepth: 1,
+      maxConcurrentLoops: 1,
       minHealthFactor: 1.75,
       criticalHealthFactor: 1.45,
       maxBorrowUsd: 25,

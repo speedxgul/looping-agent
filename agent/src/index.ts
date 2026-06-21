@@ -337,8 +337,8 @@ async function runSubagentDaemon({
 
     running = true;
     try {
-      await runSubagentTick({ role, config, clients, logger, ledgerStore });
-      logger.info('Subagent tick completed', { role, ledgerPath: ledgerStore.path });
+      const summary = await runSubagentTick({ role, config, clients, logger, ledgerStore });
+      logger.info('Subagent tick completed', { role, summary, ledgerPath: ledgerStore.path });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error('Subagent loop failed', { role, error: message });
@@ -404,8 +404,12 @@ async function runSupervisor({
 
       running.add(role);
       try {
-        await runSubagentTick({ role, config, clients, logger, ledgerStore });
-        logger.info('Supervised subagent tick completed', { role, ledgerPath: ledgerStore.path });
+        const summary = await runSubagentTick({ role, config, clients, logger, ledgerStore });
+        logger.info('Supervised subagent tick completed', {
+          role,
+          summary,
+          ledgerPath: ledgerStore.path
+        });
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         logger.error('Supervised subagent loop failed', { role, error: message });
@@ -426,16 +430,20 @@ async function runSupervisor({
   const bootstrapOrder: SubagentRole[] = [
     'rate-scout',
     'position-risk',
+    'unwind-guard',
     'loop-strategist',
     'coordinator',
-    'executor',
-    'unwind-guard'
+    'executor'
   ];
   for (const role of bootstrapOrder) {
     if (roles.includes(role)) {
       try {
-        await runSubagentTick({ role, config, clients, logger, ledgerStore });
-        logger.info('Supervised bootstrap subagent tick completed', { role, ledgerPath: ledgerStore.path });
+        const summary = await runSubagentTick({ role, config, clients, logger, ledgerStore });
+        logger.info('Supervised bootstrap subagent tick completed', {
+          role,
+          summary,
+          ledgerPath: ledgerStore.path
+        });
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         logger.error('Supervised bootstrap subagent tick failed', { role, error: message });
