@@ -16,7 +16,7 @@
 > `treasury_core` + per-protocol adapters); the receipt-custody upgrade (`verified_supply`)
 > that closes the custody gap is **done** — proven live across Suilend, NAVI (via
 > `AccountCap`), and Scallop through the autonomous agent. See `move/README.md` and
-> `move/packages/DEPLOY.md`. This document covers the full non-custodial, TEE-attested
+> `runbooks/deploy.md`. This document covers the full non-custodial, TEE-attested
 > design; the one remaining roadmap item is the on-chain bounds `verifier`.
 
 ## Contents
@@ -505,7 +505,7 @@ excluded (address-bound).
 > in-TEE key after on-chain cert-chain + PCR verification, and the enclave both *signs* and
 > *decides* (optimizer in the TEE) actions the chain verifies. M4 (`seal_approve`) is
 > scaffolded + tested; live Seal provisioning and the real Suilend adapter remain. Deploy +
-> attestation runbook: [`runbooks/m3-attestation.md`](runbooks/m3-attestation.md).
+> attestation runbook: [`runbooks/deploy.md`](runbooks/deploy.md).
 
 ## 15. Lanes
 

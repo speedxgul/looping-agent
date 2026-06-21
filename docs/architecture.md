@@ -214,7 +214,7 @@ Each protocol is gated by two flags: `enabled` (reads) and `write`
 The choke-point that makes fund movement provably non-custodial — **built, tested, and
 deployed live on Sui mainnet** as a split architecture: a protocol-free `treasury_core`
 plus one adapter package per protocol (so no single package carries two protocols'
-conflicting dependency graphs). See `move/README.md` and `move/packages/DEPLOY.md`.
+conflicting dependency graphs). See `move/README.md` and `runbooks/deploy.md`.
 
 - `core/capability.move` — `Treasury` + `OwnerCap` + `AgentCap`; per-tx and rolling-period
   caps, expiry, owner revocation, principal withdrawal, on-chain receipt events. The

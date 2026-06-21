@@ -10,7 +10,7 @@ import { Transaction } from '@mysten/sui/transactions';
 // prepended in the SAME PTB before `owner_redeem`, or the protocol aborts on a stale
 // price. Mock + Scallop need no oracle. Each builder takes an optional pre-built `tx` so
 // the caller can add that refresh prelude first (PTB commands run in order) — see
-// `agent/scripts/owner-withdraw.ts` for the NAVI wiring.
+// `agent/scripts/treasury.ts (bun run treasury withdraw)` for the NAVI wiring.
 
 export interface OwnerRedeemRefs {
   packageId: string;
