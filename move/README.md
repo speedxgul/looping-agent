@@ -34,7 +34,9 @@ in the tree and module names are path-independent.)
   `verify_signature`. The real `register_enclave` (verifies a Nitro attestation's cert chain
   to the AWS root + the PCRs, then binds the secp256k1 pubkey) is **proven live on testnet**
   with an enclave on Marlin Oyster — see [`docs/runbooks/m3-attestation.md`](../docs/runbooks/m3-attestation.md).
-  Also ships a **localnet-only `register_enclave_dev`** (no attestation — remove before mainnet).
+  (The old localnet-only `register_enclave_dev` backdoor — registering an enclave from a raw
+  key with no attestation — has been **removed**; tests use the `#[test_only]`
+  `new_enclave_for_testing` instead, so nothing unattested can ship.)
 - `suilend_adapter.move` — the **real Suilend adapter**: supplies treasury funds and
   custodies the withdrawal-gating `ObligationOwnerCap` inside the `Treasury` (deposit-only
   agent, owner-only unwind), wired into the attested path via `decision`'s

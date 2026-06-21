@@ -2,19 +2,30 @@
 // the funds custodied in the Treasury via `<protocol>_adapter::owner_redeem` — this does
 // NOT go through the enclave (the owner has direct authority; the agent never can).
 //
-// This demo recovers the MOCK position (the only adapter deployed on testnet). For real
-// Suilend/NAVI withdraws, use buildOwnerRedeem{Suilend,Navi}Tx + an oracle-refresh command.
+// PROTOCOL selects the adapter:
+//   mock    — testnet demo (the only adapter deployed on testnet)
+//   scallop — mainnet; redeems the whole sCoin position; NO oracle
+//   navi    — mainnet; redeems `AMOUNT`; PREPENDS a NAVI oracle refresh (withdraw aborts stale)
+// (Suilend withdraw also needs an oracle refresh — add it the same way as NAVI when wired.)
 //
-//   source ../deployments/testnet.env && cd agent && \
-//   OWNERCAP=0x… bun scripts/owner-withdraw.ts
-// Required: PKG, TREASURY, OWNERCAP, ADDR. Optional: RPC, COIN.
+//   source deployments/mainnet.env && cd agent && PROTOCOL=scallop bun scripts/owner-withdraw.ts
+//
+// Required (all): PKG, TREASURY, OWNERCAP, ADDR. COIN defaults to SUI — set to your USDC type
+//   for real positions. scallop: SCALLOP_VERSION, SCALLOP_MARKET. navi: NAVI_ORACLE, NAVI_STORAGE,
+//   NAVI_POOL, NAVI_INCENTIVE_V2, NAVI_INCENTIVE_V3, NAVI_ASSET, AMOUNT.
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { SuiClient } from '@mysten/sui/client';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Secp256k1Keypair } from '@mysten/sui/keypairs/secp256k1';
+import { Transaction } from '@mysten/sui/transactions';
 import { fromBase64 } from '@mysten/sui/utils';
-import { buildOwnerRedeemMockTx } from '../src/core/ownerRedeemTx.ts';
+import { getPool, updateOraclePriceBeforeUserOperationPTB } from '@naviprotocol/lending';
+import {
+  buildOwnerRedeemMockTx,
+  buildOwnerRedeemNaviTx,
+  buildOwnerRedeemScallopTx
+} from '../src/core/ownerRedeemTx.ts';
 
 const env = (k: string): string => {
   const v = process.env[k];
@@ -22,12 +33,14 @@ const env = (k: string): string => {
   return v;
 };
 
-const RPC = process.env.RPC ?? 'https://fullnode.testnet.sui.io:443';
+const PROTOCOL = (process.env.PROTOCOL ?? 'mock').toLowerCase();
+const RPC = process.env.RPC ?? 'https://fullnode.mainnet.sui.io:443';
 const PKG = env('PKG');
 const TREASURY = env('TREASURY');
 const OWNERCAP = env('OWNERCAP');
 const ADDR = env('ADDR');
 const COIN = process.env.COIN ?? '0x2::sui::SUI';
+const naviEnv = RPC.includes('testnet') || RPC.includes('devnet') ? 'dev' : 'prod';
 
 const client = new SuiClient({ url: RPC });
 
@@ -50,19 +63,57 @@ async function treasuryFunds(): Promise<string> {
   return (o.data?.content as any)?.fields?.funds ?? '?';
 }
 
-async function main() {
-  const signer = loadSigner(ADDR);
-  console.log('owner:', ADDR);
-  console.log('treasury funds before:', await treasuryFunds());
-
-  // OwnerCap-gated: redeem the custodied mock position back to the owner.
-  const tx = buildOwnerRedeemMockTx({
+/** Build the protocol-specific owner_redeem PTB (prepending an oracle refresh where needed). */
+async function buildWithdrawTx(): Promise<Transaction> {
+  const base = {
     packageId: PKG,
     coinType: COIN,
     treasuryId: TREASURY,
     ownerCapId: OWNERCAP,
     ownerAddress: ADDR
-  });
+  };
+
+  if (PROTOCOL === 'mock') return buildOwnerRedeemMockTx(base);
+
+  if (PROTOCOL === 'scallop') {
+    // Scallop redeem needs no oracle — redeems the whole custodied sCoin position.
+    return buildOwnerRedeemScallopTx({
+      ...base,
+      versionId: env('SCALLOP_VERSION'),
+      marketId: env('SCALLOP_MARKET')
+    });
+  }
+
+  if (PROTOCOL === 'navi') {
+    // NAVI's value-computing withdraw aborts on a stale oracle, so prepend the same Pyth
+    // refresh the custodial path uses BEFORE owner_redeem (PTB commands run in order).
+    const tx = new Transaction();
+    const pool = await getPool(COIN, { env: naviEnv });
+    await updateOraclePriceBeforeUserOperationPTB(tx, ADDR, [pool], { env: naviEnv });
+    return buildOwnerRedeemNaviTx(
+      {
+        ...base,
+        oracleId: env('NAVI_ORACLE'),
+        storageId: env('NAVI_STORAGE'),
+        poolId: env('NAVI_POOL'),
+        incentiveV2Id: env('NAVI_INCENTIVE_V2'),
+        incentiveV3Id: env('NAVI_INCENTIVE_V3'),
+        assetId: Number(env('NAVI_ASSET')),
+        amount: BigInt(env('AMOUNT'))
+      },
+      tx
+    );
+  }
+
+  throw new Error(`unknown PROTOCOL '${PROTOCOL}' (use mock | scallop | navi)`);
+}
+
+async function main() {
+  const signer = loadSigner(ADDR);
+  console.log(`owner: ${ADDR} | protocol: ${PROTOCOL}`);
+  console.log('treasury funds before:', await treasuryFunds());
+
+  const tx = await buildWithdrawTx();
   const r = await client.signAndExecuteTransaction({
     signer,
     transaction: tx,

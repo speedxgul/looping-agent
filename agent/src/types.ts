@@ -3,7 +3,16 @@ import type { ScallopClient } from './clients/chain/scallopClient.js';
 import type { SuiExecutionClient } from './clients/chain/suiExecutionClient.js';
 import type { SuilendClient } from './clients/chain/suilendClient.js';
 import type { TreasuryClient } from './clients/chain/treasuryClient.js';
-import type { OpenAIResponsesClient } from './clients/http/openaiResponsesClient.js';
+/** The LLM client the agent loop drives — satisfied by both the OpenAI (Responses) and the
+ *  Anthropic (Messages) backed clients. */
+export interface LlmClient {
+  create(params: {
+    instructions: string;
+    input: OpenAIInputItem[];
+    tools: OpenAIToolDefinition[];
+  }): Promise<OpenAIResponse>;
+}
+
 import type { XClient } from './clients/http/xClient.js';
 import type { WalrusBlobClient } from './clients/storage/walrusBlobClient.js';
 import type { WalrusMemoryClient } from './clients/storage/walrusMemoryClient.js';
@@ -36,6 +45,13 @@ export interface AppConfig {
     model: string;
     baseUrl: string;
     maxToolRounds: number;
+  };
+  /** Optional Anthropic backend — when apiKey is set, the agent's LLM client uses Anthropic's
+   *  Messages API instead of OpenAI's Responses API (same tool loop). */
+  anthropic: {
+    apiKey: string;
+    model: string;
+    baseUrl: string;
   };
   x: {
     enablePosting: boolean;
@@ -104,6 +120,29 @@ export interface AppConfig {
     /** Shared attested `Enclave<DECISION>` object id. */
     enclaveId: string;
     enclaveUrl: string;
+    /**
+     * Per-protocol shared-object ids needed to submit a real (non-mock) leg. A protocol's
+     * legs are only submittable once its ids are filled (otherwise the enclave still
+     * decides them but treasury_supply reports them as skipped). Mainnet object ids.
+     */
+    protocols: {
+      suilend: {
+        marketType: string;
+        lendingMarketId: string;
+        reserveArrayIndex: number;
+        /** On-chain Pyth `PriceInfoObject` id for the asset; set → reserve refresh is
+         *  prepended to the Suilend supply PTB (mainnet). Empty → no refresh. */
+        pythPriceInfoObjectId: string;
+      };
+      scallop: { versionId: string; marketId: string };
+      navi: {
+        storageId: string;
+        poolId: string;
+        incentiveV2Id: string;
+        incentiveV3Id: string;
+        assetId: number;
+      };
+    };
   };
 }
 
@@ -114,7 +153,7 @@ export interface Clients {
   scallop: ScallopClient;
   /** Present only when treasury mode is enabled (non-custodial path). */
   treasury: TreasuryClient | null;
-  openai: OpenAIResponsesClient;
+  openai: LlmClient;
   x: XClient;
   walrusBlob: WalrusBlobClient;
   walrusMemory: WalrusMemoryClient;

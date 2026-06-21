@@ -75,6 +75,10 @@ export interface VerifiedSupplySuilendRefs extends VerifiedSupplyRefs {
   lendingMarketId: string;
   /** Reserve index for the asset, resolved off-chain from the coin type. */
   reserveArrayIndex: bigint;
+  /** The on-chain Pyth `PriceInfoObject` id for this reserve's asset. Present →
+   *  a reserve-price refresh is prepended to the supply PTB (Suilend deposit aborts
+   *  on a stale reserve price). Absent (e.g. testnet/mock-only) → no refresh. */
+  pythPriceInfoObjectId?: string;
 }
 
 function addSuilendCall(
@@ -243,9 +247,9 @@ export interface AllocationRefs {
 export function buildVerifiedAllocationTx(
   legs: AllocationLeg[],
   refs: AllocationRefs,
-  timestampMs: bigint
+  timestampMs: bigint,
+  tx: Transaction = new Transaction()
 ): Transaction {
-  const tx = new Transaction();
   for (const { intent, signatureHex } of legs) {
     switch (intent.protocolId) {
       case 0:

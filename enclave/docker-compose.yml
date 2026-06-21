@@ -14,7 +14,7 @@
 #   - The app serves on :3000 (Oyster convention); attestation on :1300/:1301.
 services:
   enclave:
-    image: docker.io/REPLACE_WITH_YOUR_PUSHED_DIGEST   # e.g. <reg>/treasury-enclave@sha256:...
+    image: docker.io/0xmihirsahu/treasury-enclave@sha256:476df8e9c1ba46b685dc067298e272475b30467ff730be75788a8ce58e757846
     container_name: treasury-enclave
     restart: unless-stopped
     init: true

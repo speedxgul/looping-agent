@@ -8,7 +8,9 @@ import { Transaction } from '@mysten/sui/transactions';
 // ⚠️ LIVE Suilend / NAVI withdraw additionally need a fresh oracle price: a Pyth
 // `refresh_reserve_price` (Suilend) / `update_oracle_price` (NAVI) command must be
 // prepended in the SAME PTB before `owner_redeem`, or the protocol aborts on a stale
-// price. Mock + Scallop need no oracle. The refresh composition is not built here yet.
+// price. Mock + Scallop need no oracle. Each builder takes an optional pre-built `tx` so
+// the caller can add that refresh prelude first (PTB commands run in order) — see
+// `agent/scripts/owner-withdraw.ts` for the NAVI wiring.
 
 export interface OwnerRedeemRefs {
   packageId: string;
@@ -25,8 +27,10 @@ function transferToOwner(tx: Transaction, coin: ReturnType<Transaction['moveCall
 }
 
 /** `mock_supply::owner_redeem<T>(treasury, owner)` → Coin<T> to the owner. */
-export function buildOwnerRedeemMockTx(refs: OwnerRedeemRefs): Transaction {
-  const tx = new Transaction();
+export function buildOwnerRedeemMockTx(
+  refs: OwnerRedeemRefs,
+  tx: Transaction = new Transaction()
+): Transaction {
   const coin = tx.moveCall({
     target: `${refs.packageId}::mock_supply::owner_redeem`,
     typeArguments: [refs.coinType],
@@ -45,8 +49,10 @@ export interface OwnerRedeemSuilendRefs extends OwnerRedeemRefs {
 }
 
 /** `suilend_adapter::owner_redeem<P,T>(treasury, owner, lending_market, reserve_idx, amount, clock)`. */
-export function buildOwnerRedeemSuilendTx(refs: OwnerRedeemSuilendRefs): Transaction {
-  const tx = new Transaction();
+export function buildOwnerRedeemSuilendTx(
+  refs: OwnerRedeemSuilendRefs,
+  tx: Transaction = new Transaction()
+): Transaction {
   const coin = tx.moveCall({
     target: `${refs.packageId}::suilend_adapter::owner_redeem`,
     typeArguments: [refs.marketType, refs.coinType],
@@ -69,8 +75,10 @@ export interface OwnerRedeemScallopRefs extends OwnerRedeemRefs {
 }
 
 /** `scallop_adapter::owner_redeem<T>(treasury, owner, version, market, clock)` — redeems the whole position. */
-export function buildOwnerRedeemScallopTx(refs: OwnerRedeemScallopRefs): Transaction {
-  const tx = new Transaction();
+export function buildOwnerRedeemScallopTx(
+  refs: OwnerRedeemScallopRefs,
+  tx: Transaction = new Transaction()
+): Transaction {
   const coin = tx.moveCall({
     target: `${refs.packageId}::scallop_adapter::owner_redeem`,
     typeArguments: [refs.coinType],
@@ -98,8 +106,10 @@ export interface OwnerRedeemNaviRefs extends OwnerRedeemRefs {
 }
 
 /** `navi_adapter::owner_redeem<T>(treasury, owner, oracle, storage, pool, inc_v2, inc_v3, asset, amount, clock)`. */
-export function buildOwnerRedeemNaviTx(refs: OwnerRedeemNaviRefs): Transaction {
-  const tx = new Transaction();
+export function buildOwnerRedeemNaviTx(
+  refs: OwnerRedeemNaviRefs,
+  tx: Transaction = new Transaction()
+): Transaction {
   const coin = tx.moveCall({
     target: `${refs.packageId}::navi_adapter::owner_redeem`,
     typeArguments: [refs.coinType],

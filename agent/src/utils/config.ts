@@ -35,6 +35,11 @@ export function loadConfig(): AppConfig {
       baseUrl: readString('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
       maxToolRounds: readNumber('MAX_TOOL_ROUNDS', 6)
     },
+    anthropic: {
+      apiKey: readString('ANTHROPIC_API_KEY', ''),
+      model: readString('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
+      baseUrl: readString('ANTHROPIC_BASE_URL', 'https://api.anthropic.com/v1')
+    },
     x: {
       enablePosting: readBoolean('ENABLE_X_POSTING', false),
       userAccessToken: readString('X_USER_ACCESS_TOKEN', ''),
@@ -87,7 +92,26 @@ export function loadConfig(): AppConfig {
       agentCapId: readString('TREASURY_AGENT_CAP_ID', ''),
       registryId: readString('TREASURY_REGISTRY_ID', ''),
       enclaveId: readString('TREASURY_ENCLAVE_OBJECT_ID', ''),
-      enclaveUrl: readString('TREASURY_ENCLAVE_URL', '')
+      enclaveUrl: readString('TREASURY_ENCLAVE_URL', ''),
+      protocols: {
+        suilend: {
+          marketType: readString('TREASURY_SUILEND_MARKET_TYPE', ''),
+          lendingMarketId: readString('TREASURY_SUILEND_LENDING_MARKET_ID', ''),
+          reserveArrayIndex: readNumber('TREASURY_SUILEND_RESERVE_INDEX', 0),
+          pythPriceInfoObjectId: readString('TREASURY_SUILEND_PYTH_PRICE_INFO_ID', '')
+        },
+        scallop: {
+          versionId: readString('TREASURY_SCALLOP_VERSION_ID', ''),
+          marketId: readString('TREASURY_SCALLOP_MARKET_ID', '')
+        },
+        navi: {
+          storageId: readString('TREASURY_NAVI_STORAGE_ID', ''),
+          poolId: readString('TREASURY_NAVI_POOL_ID', ''),
+          incentiveV2Id: readString('TREASURY_NAVI_INCENTIVE_V2_ID', ''),
+          incentiveV3Id: readString('TREASURY_NAVI_INCENTIVE_V3_ID', ''),
+          assetId: readNumber('TREASURY_NAVI_ASSET_ID', 0)
+        }
+      }
     },
     walrus: {
       memoryBackend: readMemoryBackend('AGENT_MEMORY_BACKEND', 'file'),

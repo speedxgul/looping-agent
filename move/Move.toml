@@ -3,12 +3,18 @@ name = "treasury_agent"
 edition = "2024"
 
 [dependencies]
-# Build-time interface for Suilend (@suilend/core). Local stub mirroring Suilend's exact
-# public signatures so `suilend_adapter.move` compiles against the real API without
-# dragging Suilend's unbuildable source (dead framework rev) or Pyth/Wormhole/Switchboard.
-# See vendor/suilend_interface/Move.toml. Mainnet publish swaps this for the real package.
+# MAINNET: all three protocols link to their REAL published source (git), which carries the full
+# transitive dependency graph (Pyth/Wormhole/Switchboard/XOracle/…) the publish linkage needs —
+# local interface stubs could not (PublishUpgradeMissingDependency), and MVR lacks source for them.
+# Each provides the named address our adapters call: scallop→`protocol`, suilend→`suilend`,
+# navi→`lending_core` + `oracle`. (Testnet/localnet: swap back to the vendor/* stubs.)
+protocol = { git = "https://github.com/scallop-io/sui-lending-protocol.git", subdir = "contracts/protocol", rev = "main" }
+# NAVI + Suilend stay as local stubs: combining their (legacy-format) source with Scallop's in one
+# new-style package hits Sui's old↔new package-format migration wall (conflicting Sui-framework /
+# Pyth / Switchboard forks the resolver can't reconcile). They publish alongside as abort-body
+# stubs via --with-unpublished-dependencies; their `verified_supply_*` entries can be upgraded to
+# real protocol calls later (compatible upgrade) once the protocols migrate format or we split packages.
 suilend_interface = { local = "vendor/suilend_interface" }
-scallop_interface = { local = "vendor/scallop_interface" }
 navi_interface = { local = "vendor/navi_interface" }
 navi_oracle = { local = "vendor/navi_oracle" }
 
@@ -22,3 +28,4 @@ enclave = "0x0"
 [environments]
 testnet = "4c78adac"
 localnet = "0c91dfe0"
+mainnet = "35834a8a"

@@ -224,9 +224,18 @@ export class TreasuryClient {
     return json.legs.map((l) => ({ intent: parseSignedLeg(l.intent), signatureHex: l.signature }));
   }
 
-  /** Bundle the signed legs into ONE atomic PTB (one verified_supply_* command per leg). */
-  buildSupplyTx(legs: AllocationLeg[], refs: AllocationRefs, timestampMs: bigint): Transaction {
-    return buildVerifiedAllocationTx(legs, refs, timestampMs);
+  /**
+   * Bundle the signed legs into ONE atomic PTB (one verified_supply_* command per leg).
+   * Pass `tx` to append onto a transaction that already holds an oracle-refresh prelude
+   * (e.g. Suilend's reserve refresh, which must precede its deposit in the same PTB).
+   */
+  buildSupplyTx(
+    legs: AllocationLeg[],
+    refs: AllocationRefs,
+    timestampMs: bigint,
+    tx?: Transaction
+  ): Transaction {
+    return buildVerifiedAllocationTx(legs, refs, timestampMs, tx);
   }
 
   /** Convenience: the protocol name for a protocol id. */

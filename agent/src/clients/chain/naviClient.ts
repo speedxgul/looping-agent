@@ -245,6 +245,17 @@ export class NaviClient implements LendingProtocolClient {
     });
   }
 
+  /**
+   * Public hook for the non-custodial treasury WITHDRAW PTB: prepend the same Pyth oracle
+   * refresh that the custodial withdraw/borrow use (NAVI's owner-redeem recomputes value and
+   * aborts on a stale price). Returns the same `tx` for chaining. NAVI *deposit* needs none,
+   * so this is only for the redeem side. Mainnet-gated like the rest of the NAVI path.
+   */
+  async addOracleRefresh(tx: Transaction, coinType: string): Promise<Transaction> {
+    await this.refreshOraclePrices(tx, coinType);
+    return tx;
+  }
+
   async executeRepay({ coinType, rawAmount }: LendingWriteParams): Promise<ExecuteTransactionResult> {
     const tx = new Transaction();
     const coin = this.execution.coinForAmount(tx, coinType, rawAmount);
