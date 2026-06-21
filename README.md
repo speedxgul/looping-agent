@@ -1,11 +1,11 @@
-# Treasury Agent — Sui
+# HexLiquid Yield
 
-A non-custodial agent that deploys idle stablecoins under on-chain risk bounds you can
-cryptographically verify. The LLM plans and explains; a deterministic layer moves funds.
+A non-custodial multi-agent that deploys idle stablecoins under on-chain risk bounds you can cryptographically verify. 
+The LLM plans(One Main Agent + 6 Independent SubAgents), a decision layer runs strategies inside TEE and explains; a deterministic layer moves funds. Shared Walrus State and Memories 
 
 ## Status
 
-The v1 verifiable-execution stack is **built, tested, and demonstrated live on Sui testnet
+The v2 verifiable-execution stack is **built, tested, and demonstrated live on Sui MainNet
 with real AWS Nitro attestation** (~48 tests across Move + agent + enclave). Full design:
 [`docs/treasury-agent-design.md`](docs/treasury-agent-design.md); phased build log:
 [`docs/superpowers/plans/2026-06-20-implementation-roadmap.md`](docs/superpowers/plans/2026-06-20-implementation-roadmap.md);
