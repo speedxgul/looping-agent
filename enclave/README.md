@@ -93,9 +93,9 @@ for the exact CLI calls.)
 
 ## What's proven vs. what's left
 
-- ✅ Local: enclave service signs a decision → Sui `decision.move` verifies the exact signature
+- Local: enclave service signs a decision → Sui `decision.move` verifies the exact signature
   → would release bounded funds (BCS parity self-guarded). See `move/sources/decision.move`.
-- ⏭️ Cloud (needs Docker + funded wallets): deploy the signer to Oyster, publish + register the
+- ⏭ Cloud (needs Docker + funded wallets): deploy the signer to Oyster, publish + register the
   `move/` package, and have the agent submit `execute_decision` in a PTB.
 
 Docs: [Oyster quickstart](https://docs.marlin.org/oyster/build-cvm/quickstart) ·

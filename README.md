@@ -7,9 +7,10 @@ cryptographically verify. The LLM plans and explains; a deterministic layer move
 
 | Folder | What it is |
 |---|---|
-| [`agent/`](agent/) | Off-chain TypeScript agent (the "brain"): autonomous loop, strategy/optimizer, policy, Suilend/NAVI/Scallop clients, Walrus/MemWal memory. Self-contained Bun package (own `package.json`/`biome.json`/`tsconfig.json`). |
-| [`move/`](move/) | On-chain Sui Move package (the choke-point): scoped revocable capability, on-chain bounds verifier, per-action receipts, and the enclave-attestation verifier. |
-| [`docs/`](docs/) | Thesis & scope ([`defi-agent-sui.md`](docs/defi-agent-sui.md)), strategy math ([`strategy-research.md`](docs/strategy-research.md)), and venue/SDK selection. |
+| [`agent/`](agent/) | Off-chain TypeScript agent (the "brain"): an LLM tool-calling loop **and** a six-subagent yield-looping pipeline, the own-impact-aware optimizer, policy, health guard, Suilend/NAVI/Scallop read+write clients, Walrus/MemWal memory. Self-contained Bun package. |
+| [`move/`](move/) | On-chain Sui Move package (the choke-point). Built + tested: scoped revocable capability (`capability.move`), enclave-signature verifier (`decision.move`), PCR-pinned attestation (`enclave.move`). Roadmap: receipt-custody `verified_supply` and on-chain bounds `verifier`. |
+| [`enclave/`](enclave/) | TEE app (AWS Nitro / Marlin Oyster) for the attested strategy + signer — roadmap M3–M4. |
+| [`docs/`](docs/) | [`architecture.md`](docs/architecture.md) (what's built), [`subagent-pipeline.md`](docs/subagent-pipeline.md) (the loop pipeline), [`autonomy.md`](docs/autonomy.md), [`treasury-agent-design.md`](docs/treasury-agent-design.md) (TEE-verified custody design), [`strategy-research.md`](docs/strategy-research.md), [`deployment.md`](docs/deployment.md). |
 
 ## Quick start
 
@@ -19,11 +20,20 @@ Run from the repo root — these delegate into `agent/` and `move/`:
 bun run setup                        # install agent deps
 cp agent/.env.example agent/.env     # set OPENAI_API_KEY and AGENT_SUI_PRIVATE_KEY
 bun run doctor                       # config + key + RPC checks
-bun run dev                          # one autonomous loop (run-once)
+bun run dev                          # one autonomous main-agent loop (run-once)
+
+cd agent && bun run run:supervisor   # main agent + six-subagent loop pipeline
 
 bun run typecheck && bun run check && bun run test   # agent gates
 bun run move:build && bun run move:test              # on-chain package
 ```
+
+**Two decision engines, one enforcement layer.** A flexible LLM tool-calling agent and
+a deterministic six-subagent pipeline (rate-scout · position-risk · loop-strategist ·
+coordinator · executor · unwind-guard) both move funds only through the same policy,
+caps, allowlists, and health-factor gates. The pipeline runs **single-depth USDC→SUI
+yield loops** with no LLM in the fund-moving path. See
+[`docs/subagent-pipeline.md`](docs/subagent-pipeline.md).
 
 (Use `bun run <script>` from root, not bare `bun test`.) See [`agent/README.md`](agent/README.md)
 for full agent docs and [`move/README.md`](move/README.md) for the on-chain package.
