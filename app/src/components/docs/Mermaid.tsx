@@ -1,18 +1,20 @@
 'use client';
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 let initialized = false;
+let renderSeq = 0;
 
 export default function Mermaid({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
-  const rawId = useId();
   const [error, setError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-
-    const id = `mmd-${rawId.replace(/[^a-zA-Z0-9]/g, '')}`;
+    // Unique per effect invocation so React StrictMode's double-mount (dev)
+    // never reuses an id between two in-flight renders, which would collide
+    // and throw, dropping a valid diagram to the error fallback.
+    const id = `mermaid-${(renderSeq += 1)}`;
 
     async function render() {
       try {
@@ -21,7 +23,7 @@ export default function Mermaid({ code }: { code: string }) {
           mermaid.initialize({
             startOnLoad: false,
             theme: 'dark',
-            securityLevel: 'strict',
+            securityLevel: 'loose',
             themeVariables: {
               fontFamily: 'var(--font-sans), ui-sans-serif, system-ui, sans-serif'
             }
@@ -43,7 +45,7 @@ export default function Mermaid({ code }: { code: string }) {
       } catch {
         if (!cancelled) setError(true);
       } finally {
-        // Remove any orphaned temp node mermaid may have appended to <body>.
+        // Remove any orphaned temp node mermaid may append to <body>.
         document.getElementById(id)?.remove();
         document.getElementById(`d${id}`)?.remove();
       }
@@ -53,7 +55,7 @@ export default function Mermaid({ code }: { code: string }) {
     return () => {
       cancelled = true;
     };
-  }, [code, rawId]);
+  }, [code]);
 
   if (error) {
     return (
