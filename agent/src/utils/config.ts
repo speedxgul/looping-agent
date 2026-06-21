@@ -87,7 +87,11 @@ export function loadConfig(): AppConfig {
     },
     treasury: {
       enabled: readBoolean('TREASURY_MODE', false),
+      // Split architecture: `packageId` is the protocol-free `treasury_core` package (decision +
+      // capability + enclave registration). Each protocol's supply/redeem lives in its own
+      // adapter package (`*AdapterPackageId`), which depends on core + that one protocol.
       packageId: readString('TREASURY_PACKAGE_ID', ''),
+      mockAdapterPackageId: readString('TREASURY_MOCK_ADAPTER_PKG', ''),
       treasuryId: readString('TREASURY_ID', ''),
       agentCapId: readString('TREASURY_AGENT_CAP_ID', ''),
       registryId: readString('TREASURY_REGISTRY_ID', ''),
@@ -95,16 +99,19 @@ export function loadConfig(): AppConfig {
       enclaveUrl: readString('TREASURY_ENCLAVE_URL', ''),
       protocols: {
         suilend: {
+          adapterPackageId: readString('TREASURY_SUILEND_ADAPTER_PKG', ''),
           marketType: readString('TREASURY_SUILEND_MARKET_TYPE', ''),
           lendingMarketId: readString('TREASURY_SUILEND_LENDING_MARKET_ID', ''),
           reserveArrayIndex: readNumber('TREASURY_SUILEND_RESERVE_INDEX', 0),
           pythPriceInfoObjectId: readString('TREASURY_SUILEND_PYTH_PRICE_INFO_ID', '')
         },
         scallop: {
+          adapterPackageId: readString('TREASURY_SCALLOP_ADAPTER_PKG', ''),
           versionId: readString('TREASURY_SCALLOP_VERSION_ID', ''),
           marketId: readString('TREASURY_SCALLOP_MARKET_ID', '')
         },
         navi: {
+          adapterPackageId: readString('TREASURY_NAVI_ADAPTER_PKG', ''),
           storageId: readString('TREASURY_NAVI_STORAGE_ID', ''),
           poolId: readString('TREASURY_NAVI_POOL_ID', ''),
           incentiveV2Id: readString('TREASURY_NAVI_INCENTIVE_V2_ID', ''),

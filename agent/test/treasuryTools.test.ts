@@ -33,8 +33,13 @@ describe('buildAllocationRefs', () => {
 
   it('adds a real protocol once its shared-object ids are configured', () => {
     const cfg = baseConfig();
-    cfg.treasury.protocols.scallop = { versionId: '0xVersion', marketId: '0xMarket' };
+    cfg.treasury.protocols.scallop = {
+      adapterPackageId: '0xScallopAdapter',
+      versionId: '0xVersion',
+      marketId: '0xMarket'
+    };
     const refs = buildAllocationRefs(cfg, '0xTreasury', '0xAgentCap');
+    expect(refs.scallop?.packageId).toBe('0xScallopAdapter');
     expect(refs.scallop?.versionId).toBe('0xVersion');
     expect(refs.scallop?.marketId).toBe('0xMarket');
     expect(hasRefFor(refs, 1)).toBe(true); // scallop now submittable

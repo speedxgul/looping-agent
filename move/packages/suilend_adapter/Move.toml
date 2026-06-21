@@ -1,0 +1,10 @@
+[package]
+name = "suilend_adapter"
+edition = "2024"
+
+# Sees ONLY Suilend's transitive graph + our core. Real published Suilend source via git.
+[dependencies]
+treasury_core = { local = "../core" }
+enclave = { local = "../enclave" }
+suilend = { git = "https://github.com/suilend/suilend.git", subdir = "contracts/suilend", rev = "devel" }
+

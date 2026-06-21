@@ -1,9 +1,0 @@
-# Build-time interface for NAVI's oracle package (mainnet addr
-# 0xca441b44943c16be0e6e23c5a955bb971537ea3289ae8016fbf33fffe1fd210f). Only the shared
-# `PriceOracle` type, needed by NAVI's withdraw path. Never published.
-[package]
-name = "navi_oracle"
-edition = "2024"
-
-[addresses]
-oracle = "0x0"

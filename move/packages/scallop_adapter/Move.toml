@@ -1,0 +1,10 @@
+[package]
+name = "scallop_adapter"
+edition = "2024"
+
+# Sees ONLY Scallop's transitive graph + our core. Real published Scallop source via git.
+[dependencies]
+treasury_core = { local = "../core" }
+enclave = { local = "../enclave" }
+protocol = { git = "https://github.com/scallop-io/sui-lending-protocol.git", subdir = "contracts/protocol", rev = "main" }
+

@@ -56,7 +56,7 @@ function addMockCall(
   sig: string
 ) {
   tx.moveCall({
-    target: `${refs.packageId}::decision::verified_supply_entry`,
+    target: `${refs.packageId}::mock_supply::verified_supply_mock_entry`,
     typeArguments: [refs.coinType],
     arguments: [
       tx.object(refs.registryId),
@@ -89,7 +89,7 @@ function addSuilendCall(
   sig: string
 ) {
   tx.moveCall({
-    target: `${refs.packageId}::decision::verified_supply_suilend_entry`,
+    target: `${refs.packageId}::suilend_adapter::verified_supply_suilend_entry`,
     typeArguments: [refs.marketType, refs.coinType],
     arguments: [
       tx.object(refs.registryId),
@@ -118,7 +118,7 @@ function addScallopCall(
   sig: string
 ) {
   tx.moveCall({
-    target: `${refs.packageId}::decision::verified_supply_scallop_entry`,
+    target: `${refs.packageId}::scallop_adapter::verified_supply_scallop_entry`,
     typeArguments: [refs.coinType],
     arguments: [
       tx.object(refs.registryId),
@@ -153,7 +153,7 @@ function addNaviCall(
   sig: string
 ) {
   tx.moveCall({
-    target: `${refs.packageId}::decision::verified_supply_navi_entry`,
+    target: `${refs.packageId}::navi_adapter::verified_supply_navi_entry`,
     typeArguments: [refs.coinType],
     arguments: [
       tx.object(refs.registryId),

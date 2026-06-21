@@ -56,8 +56,10 @@ export function buildAllocationRefs(
   treasuryId: string,
   agentCapId: string
 ): AllocationRefs {
+  // `base` carries the package-independent object refs (registry/treasury/enclave/cap — all
+  // `treasury_core` objects). `packageId` is set PER PROTOCOL to that protocol's adapter
+  // package, since the moveCall target lives in the adapter module (split architecture).
   const base = {
-    packageId: config.treasury.packageId,
     coinType: config.sui.usdcCoinType,
     registryId: config.treasury.registryId,
     treasuryId,
@@ -65,22 +67,29 @@ export function buildAllocationRefs(
     agentCapId
   };
   const p = config.treasury.protocols;
-  const refs: AllocationRefs = { mock: base };
-  if (p.suilend.lendingMarketId && p.suilend.marketType) {
+  const refs: AllocationRefs = { mock: { ...base, packageId: config.treasury.mockAdapterPackageId } };
+  if (p.suilend.adapterPackageId && p.suilend.lendingMarketId && p.suilend.marketType) {
     refs.suilend = {
       ...base,
+      packageId: p.suilend.adapterPackageId,
       marketType: p.suilend.marketType,
       lendingMarketId: p.suilend.lendingMarketId,
       reserveArrayIndex: BigInt(p.suilend.reserveArrayIndex),
       ...(p.suilend.pythPriceInfoObjectId ? { pythPriceInfoObjectId: p.suilend.pythPriceInfoObjectId } : {})
     };
   }
-  if (p.scallop.versionId && p.scallop.marketId) {
-    refs.scallop = { ...base, versionId: p.scallop.versionId, marketId: p.scallop.marketId };
+  if (p.scallop.adapterPackageId && p.scallop.versionId && p.scallop.marketId) {
+    refs.scallop = {
+      ...base,
+      packageId: p.scallop.adapterPackageId,
+      versionId: p.scallop.versionId,
+      marketId: p.scallop.marketId
+    };
   }
-  if (p.navi.storageId && p.navi.poolId) {
+  if (p.navi.adapterPackageId && p.navi.storageId && p.navi.poolId) {
     refs.navi = {
       ...base,
+      packageId: p.navi.adapterPackageId,
       storageId: p.navi.storageId,
       poolId: p.navi.poolId,
       incentiveV2Id: p.navi.incentiveV2Id,

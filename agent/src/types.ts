@@ -112,7 +112,10 @@ export interface AppConfig {
    */
   treasury: {
     enabled: boolean;
+    /** The protocol-free `treasury_core` package (decision + capability + enclave registration). */
     packageId: string;
+    /** The `mock_adapter` package id (testnet/demo supply). */
+    mockAdapterPackageId: string;
     treasuryId: string;
     agentCapId: string;
     /** Shared `DecisionRegistry` object id. */
@@ -124,9 +127,11 @@ export interface AppConfig {
      * Per-protocol shared-object ids needed to submit a real (non-mock) leg. A protocol's
      * legs are only submittable once its ids are filled (otherwise the enclave still
      * decides them but treasury_supply reports them as skipped). Mainnet object ids.
+     * `adapterPackageId` is the protocol's own adapter package (split architecture).
      */
     protocols: {
       suilend: {
+        adapterPackageId: string;
         marketType: string;
         lendingMarketId: string;
         reserveArrayIndex: number;
@@ -134,8 +139,9 @@ export interface AppConfig {
          *  prepended to the Suilend supply PTB (mainnet). Empty → no refresh. */
         pythPriceInfoObjectId: string;
       };
-      scallop: { versionId: string; marketId: string };
+      scallop: { adapterPackageId: string; versionId: string; marketId: string };
       navi: {
+        adapterPackageId: string;
         storageId: string;
         poolId: string;
         incentiveV2Id: string;
