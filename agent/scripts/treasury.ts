@@ -8,6 +8,8 @@
 //   bun scripts/treasury.ts withdraw --protocol navi --amount 4 --submit
 //   bun scripts/treasury.ts withdraw-idle [--amount N]     # recover un-deployed principal to owner
 //   bun scripts/treasury.ts wallet-withdraw --protocol navi --amount 3   # Flow-2 wallet position (agent-signed)
+//   bun scripts/treasury.ts detach --protocol navi         # remove an emptied custodied receipt (custodied -> none)
+//   bun scripts/treasury.ts attest                         # TEE attestation banner (signing key + PCRs)
 //   bun scripts/treasury.ts sync-env                       # push TREASURY_* ids into agent/.env
 //
 // Treasury ops are owner-signed (the OWNERCAP holder); wallet-withdraw is agent-signed.
@@ -159,7 +161,9 @@ async function cmdStatus() {
   });
   const b = await t.readBudget(Date.now());
   const pos = await t.readPositions();
-  console.log(formatTreasuryStatus({ treasuryId, state: b.state, budget: b, positions: pos }));
+  console.log(
+    formatTreasuryStatus({ treasuryId, state: b.state, budget: b, positions: pos, network: 'mainnet' })
+  );
   for (const p of pos) console.log(`    - ${p.protocol} (id ${p.protocolId}) receipt ${p.receiptObjectId}`);
 }
 
@@ -367,6 +371,36 @@ async function cmdWalletWithdraw(args: Args) {
   console.log('wallet-withdraw ->', res.digest ?? JSON.stringify(res));
 }
 
+/**
+ * Detach a custodied receipt from the Treasury back to the owner via `owner_take_receipt`.
+ * For NAVI/Suilend the receipt is a reusable capability (AccountCap / ObligationOwnerCap) that
+ * persists after a withdraw — detach removes it so the vault reads `custodied: none`.
+ * Withdraw funds FIRST; detaching a still-funded receipt just moves the controlling cap to the
+ * owner (funds remain accessible via it, but the Treasury no longer tracks the position).
+ */
+async function cmdDetach(args: Args) {
+  const treasury = req('TREASURY');
+  const ownerCap = req('OWNERCAP');
+  const only = args.protocol as string | undefined;
+  const t = new TreasuryClient({ suiClient: client, treasuryId: treasury, agentCapId: '', enclaveUrl: '' });
+  const targets = (await t.readPositions()).filter((p) => !only || p.protocol === only);
+  if (targets.length === 0) {
+    console.log('no custodied positions to detach', only ? `for ${only}` : '');
+    return;
+  }
+  for (const p of targets) {
+    const tx = new Transaction();
+    const receipt = tx.moveCall({
+      target: `${CORE}::capability::owner_take_receipt`,
+      typeArguments: [USDC, p.receiptType],
+      arguments: [tx.object(treasury), tx.object(ownerCap), tx.pure.u8(p.protocolId)]
+    });
+    tx.transferObjects([receipt], ownerAddress());
+    console.log(`detach ${p.protocol}: receipt ${p.receiptObjectId} -> owner ${ownerAddress()}`);
+    await runWrite(tx, `detach ${p.protocol}`, !!args.submit);
+  }
+}
+
 /** Print the TEE attestation banner: registered signing key + on-chain PCR measurements. */
 async function cmdAttest() {
   const t = new TreasuryClient({
@@ -382,7 +416,7 @@ async function cmdAttest() {
     console.log('no enclave found (need ENCLAVE_OBJECT in deployments/mainnet-v2.env)');
     return;
   }
-  console.log(formatEnclaveAttestation(att, { enclaveUrl: t.enclaveUrl }));
+  console.log(formatEnclaveAttestation(att, { enclaveUrl: t.enclaveUrl, network: 'mainnet' }));
 }
 
 function cmdSyncEnv() {
@@ -447,13 +481,15 @@ async function main() {
       return cmdWithdrawIdle(args);
     case 'wallet-withdraw':
       return cmdWalletWithdraw(args);
+    case 'detach':
+      return cmdDetach(args);
     case 'attest':
       return cmdAttest();
     case 'sync-env':
       return cmdSyncEnv();
     default:
       console.log(
-        'commands: status | create --fund N [--cap N] | deposit --amount N | withdraw [--protocol p --amount N] [--submit] | withdraw-idle [--amount N] [--submit] | wallet-withdraw --protocol navi --amount N [--submit] | attest | sync-env'
+        'commands: status | create --fund N [--cap N] | deposit --amount N | withdraw [--protocol p --amount N] [--submit] | withdraw-idle [--amount N] [--submit] | wallet-withdraw --protocol navi --amount N [--submit] | attest | detach [--protocol p] [--submit] | sync-env'
       );
       console.log('writes are DRY-RUN unless --submit is passed.');
   }

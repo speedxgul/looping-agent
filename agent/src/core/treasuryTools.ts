@@ -136,7 +136,13 @@ export function treasuryToolHandlers({
       const positions = await treasury.readPositions().catch(() => []);
       // Demo/observability: show the vault state (balance · caps · agent · custody) clearly.
       console.log(
-        formatTreasuryStatus({ treasuryId: treasury.treasuryId, state: b.state, budget: b, positions })
+        formatTreasuryStatus({
+          treasuryId: treasury.treasuryId,
+          state: b.state,
+          budget: b,
+          positions,
+          network: config.sui.network
+        })
       );
       return {
         ok: true,
@@ -190,6 +196,7 @@ export function treasuryToolHandlers({
             enclaveUrl: treasury.enclaveUrl,
             decidePublicKey: decided.publicKey,
             scheme: decided.scheme,
+            network: config.sui.network,
             legs: legs.map((l) => ({
               protocol: TC.protocolName(l.intent.protocolId),
               amountRaw: l.intent.amount.toString(),

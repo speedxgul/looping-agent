@@ -170,6 +170,19 @@ export interface EnclaveAttestation {
   pcrs: { pcr0: string; pcr1: string; pcr2: string; pcr16: string };
 }
 
+/** Build a SuiVision explorer URL with the path matching the entity KIND. Sui distinguishes
+ *  these and so does the explorer: a shared/owned object is /object/, a published package is
+ *  /package/, a wallet/address is /account/, a coin type is /coin/, and a transaction is
+ *  /txblock/ (NOT /object/). Passing the wrong kind yields a dead link. */
+export function suivisionUrl(
+  kind: 'object' | 'package' | 'account' | 'coin' | 'tx',
+  id: string,
+  network = 'mainnet'
+): string {
+  const host = network === 'mainnet' ? 'https://suivision.xyz' : `https://${network}.suivision.xyz`;
+  return `${host}/${kind === 'tx' ? 'txblock' : kind}/${id}`;
+}
+
 /** Render a human-readable TEE attestation banner for demos/logs. `live` cross-checks the
  *  on-chain key against the `/decide` signer and appends the signed allocation legs. */
 export function formatEnclaveAttestation(
@@ -178,6 +191,7 @@ export function formatEnclaveAttestation(
     enclaveUrl?: string;
     decidePublicKey?: string;
     scheme?: string;
+    network?: string;
     legs?: Array<{ protocol: string; amountRaw: string; nonce: string; signature: string }>;
   }
 ): string {
@@ -212,6 +226,11 @@ export function formatEnclaveAttestation(
       );
     });
   }
+  const net = live?.network ?? 'mainnet';
+  // Both the attested Enclave<DECISION> and its EnclaveConfig are on-chain OBJECTS → /object/.
+  out.push(`  ${'─'.repeat(28)} explorer (SuiVision) ${'─'.repeat(22)}`);
+  out.push(`  enclave  ${suivisionUrl('object', att.enclaveId, net)}`);
+  if (att.configId) out.push(`  config   ${suivisionUrl('object', att.configId, net)}`);
   out.push(bar);
   return out.join('\n');
 }
@@ -238,7 +257,8 @@ export function formatVerifiedSupplyResult(opts: {
   if (opts.oracleRefresh && opts.oracleRefresh !== 'none')
     out.push(`  oracle refresh   ${opts.oracleRefresh}`);
   out.push(`  tx               ${opts.digest}`);
-  out.push(`  explorer         https://suiscan.xyz/${net}/tx/${opts.digest}`);
+  // A transaction is /txblock/ on SuiVision, not /object/.
+  out.push(`  explorer         ${suivisionUrl('tx', opts.digest, net)}`);
   out.push(bar);
   return out.join('\n');
 }
@@ -250,12 +270,14 @@ export function formatTreasuryStatus(opts: {
   state: TreasuryState;
   budget: DeployableBudget;
   positions?: Array<{ protocol: string }>;
+  network?: string;
 }): string {
   const bar = '═'.repeat(72);
   const usdc = (raw: bigint) =>
     `${(Number(raw) / 1e6).toLocaleString('en-US', { minimumFractionDigits: 6, maximumFractionDigits: 6 })} USDC`;
   const { state, budget } = opts;
   const pos = opts.positions ?? [];
+  const net = opts.network ?? 'mainnet';
   const out: string[] = [
     bar,
     `  TREASURY VAULT — ${opts.treasuryId}`,
@@ -266,6 +288,9 @@ export function formatTreasuryStatus(opts: {
     `  period cap       ${usdc(state.periodCapRaw)}   (remaining ${usdc(budget.remainingPeriodRaw)})`,
     `  agent            ${state.agentCapId ? `ACTIVE  (cap ${state.agentCapId.slice(0, 10)}…)` : 'REVOKED'}`,
     `  custodied        ${pos.length ? `${pos.map((p) => p.protocol.toUpperCase()).join(', ')}   (${pos.length} position${pos.length > 1 ? 's' : ''})` : 'none'}`,
+    // The Treasury<T> and AgentCap<T> are on-chain OBJECTS → /object/.
+    `  vault            ${suivisionUrl('object', opts.treasuryId, net)}`,
+    ...(state.agentCapId ? [`  agent cap        ${suivisionUrl('object', state.agentCapId, net)}`] : []),
     bar
   ];
   return out.join('\n');
