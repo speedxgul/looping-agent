@@ -4,11 +4,14 @@
 //   bun scripts/treasury.ts status                         # budget + custodied positions
 //   bun scripts/treasury.ts create --fund 20 --cap 500     # create+fund, auto-records ids
 //   bun scripts/treasury.ts deposit --amount 8             # top up the active treasury
-//   bun scripts/treasury.ts withdraw [--submit]            # redeem all positions to owner (dry-run default)
+//   bun scripts/treasury.ts withdraw [--submit]            # redeem all treasury positions to owner
 //   bun scripts/treasury.ts withdraw --protocol navi --amount 4 --submit
+//   bun scripts/treasury.ts withdraw-idle [--amount N]     # recover un-deployed principal to owner
+//   bun scripts/treasury.ts wallet-withdraw --protocol navi --amount 3   # Flow-2 wallet position (agent-signed)
 //   bun scripts/treasury.ts sync-env                       # push TREASURY_* ids into agent/.env
 //
-// Owner-signed via the Sui keystore (the OWNERCAP holder). Dry-runs before any write.
+// Treasury ops are owner-signed (the OWNERCAP holder); wallet-withdraw is agent-signed.
+// All writes dry-run unless --submit is passed.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -18,6 +21,10 @@ import { Secp256k1Keypair } from '@mysten/sui/keypairs/secp256k1';
 import { coinWithBalance, Transaction } from '@mysten/sui/transactions';
 import { fromBase64, fromHex } from '@mysten/sui/utils';
 import { getPool, updateOraclePriceBeforeUserOperationPTB } from '@naviprotocol/lending';
+import { NaviClient } from '../src/clients/chain/naviClient.ts';
+import { ScallopClient } from '../src/clients/chain/scallopClient.ts';
+import { SuiExecutionClient } from '../src/clients/chain/suiExecutionClient.ts';
+import { SuilendClient } from '../src/clients/chain/suilendClient.ts';
 import { TreasuryClient } from '../src/clients/chain/treasuryClient.ts';
 import {
   buildOwnerRedeemMockTx,
@@ -25,6 +32,8 @@ import {
   buildOwnerRedeemScallopTx,
   buildOwnerRedeemSuilendTx
 } from '../src/core/ownerRedeemTx.ts';
+import { loadConfig } from '../src/utils/config.ts';
+import { createLogger } from '../src/utils/logger.ts';
 
 const ENV_PATH = path.resolve(import.meta.dir, '../../deployments/mainnet-v2.env');
 const AGENT_ENV_PATH = path.resolve(import.meta.dir, '../.env');
@@ -294,6 +303,73 @@ async function cmdWithdraw(args: Args) {
   }
 }
 
+/** Withdraw idle (un-deployed) principal from the Treasury back to the owner wallet. */
+async function cmdWithdrawIdle(args: Args) {
+  const treasury = req('TREASURY');
+  const ownerCap = req('OWNERCAP');
+  const t = new TreasuryClient({ suiClient: client, treasuryId: treasury, agentCapId: '', enclaveUrl: '' });
+  const idleRaw = BigInt((await t.readBudget(Date.now())).state.fundsRaw);
+  const amountRaw = args.amount ? BigInt(toRaw(Number(args.amount))) : idleRaw;
+  if (amountRaw <= 0n) {
+    console.log('no idle principal to withdraw');
+    return;
+  }
+  if (amountRaw > idleRaw) throw new Error(`--amount ${fmt(amountRaw)} exceeds idle ${fmt(idleRaw)} USDC`);
+  const tx = new Transaction();
+  const coin = tx.moveCall({
+    target: `${CORE}::capability::withdraw_principal`,
+    typeArguments: [USDC],
+    arguments: [tx.object(treasury), tx.object(ownerCap), tx.pure.u64(amountRaw)]
+  });
+  tx.transferObjects([coin], ownerAddress());
+  console.log(`withdraw-idle: ${fmt(amountRaw)} USDC -> owner ${ownerAddress()}`);
+  await runWrite(tx, 'withdraw-idle', !!args.submit);
+}
+
+/**
+ * Withdraw an agent-WALLET lending position (Flow 2 / non-treasury) back to the agent
+ * wallet. Signs with the AGENT key (the wallet that owns the position), not the owner.
+ */
+async function cmdWalletWithdraw(args: Args) {
+  const protocol = String(args.protocol ?? 'navi').toLowerCase();
+  const asset = String(args.asset ?? 'usdc').toLowerCase();
+  const amountUsdc = Number(args.amount ?? '0');
+  if (!(amountUsdc > 0)) throw new Error('--amount <usdc> is required');
+
+  const config = loadConfig();
+  const logger = createLogger(config.logLevel);
+  const execution = new SuiExecutionClient({
+    rpcUrl: config.sui.rpcUrl,
+    network: config.sui.network,
+    privateKey: config.sui.privateKey,
+    walletAddress: config.agent.walletAddress,
+    usdcCoinType: config.sui.usdcCoinType,
+    suiCoinType: config.sui.suiCoinType,
+    logger
+  });
+  const lc =
+    protocol === 'navi'
+      ? new NaviClient({ execution, config, logger })
+      : protocol === 'suilend'
+        ? new SuilendClient({ execution, config, logger })
+        : protocol === 'scallop'
+          ? new ScallopClient({ execution, network: config.sui.network, config, logger })
+          : null;
+  if (!lc) throw new Error(`unknown protocol ${protocol} (use navi|suilend|scallop)`);
+
+  const coinType = lc.resolveCoinType(asset);
+  const rawAmount = String(Math.round(amountUsdc * 1e6));
+  console.log(
+    `wallet-withdraw: ${amountUsdc} ${asset} from ${protocol} -> agent ${config.agent.walletAddress}`
+  );
+  if (!args.submit) {
+    console.log('  → re-run with --submit to execute (signs with the agent key).');
+    return;
+  }
+  const res = await lc.executeWithdraw({ coinType, rawAmount, asset });
+  console.log('wallet-withdraw ->', res.digest ?? JSON.stringify(res));
+}
+
 function cmdSyncEnv() {
   const map: Record<string, string> = {
     TREASURY_MODE: 'true',
@@ -351,11 +427,15 @@ async function main() {
       return cmdDeposit(args);
     case 'withdraw':
       return cmdWithdraw(args);
+    case 'withdraw-idle':
+      return cmdWithdrawIdle(args);
+    case 'wallet-withdraw':
+      return cmdWalletWithdraw(args);
     case 'sync-env':
       return cmdSyncEnv();
     default:
       console.log(
-        'commands: status | create --fund N [--cap N] | deposit --amount N | withdraw [--protocol p --amount N] [--submit] | sync-env'
+        'commands: status | create --fund N [--cap N] | deposit --amount N | withdraw [--protocol p --amount N] [--submit] | withdraw-idle [--amount N] [--submit] | wallet-withdraw --protocol navi --amount N [--submit] | sync-env'
       );
       console.log('writes are DRY-RUN unless --submit is passed.');
   }
