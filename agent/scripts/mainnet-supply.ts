@@ -10,14 +10,11 @@
 import { SuiClient } from '@mysten/sui/client';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { Transaction } from '@mysten/sui/transactions';
 import { fromHex } from '@mysten/sui/utils';
 import { LENDING_MARKET_ID, LENDING_MARKET_TYPE, SuilendClient } from '@suilend/sdk';
 import { TreasuryClient } from '../src/clients/chain/treasuryClient.ts';
-import {
-  type AllocationRefs,
-  buildVerifiedAllocationTx
-} from '../src/core/verifiedSupplyTx.ts';
-import { Transaction } from '@mysten/sui/transactions';
+import { type AllocationRefs, buildVerifiedAllocationTx } from '../src/core/verifiedSupplyTx.ts';
 
 const env = (k: string, d?: string): string => {
   const v = process.env[k] ?? d;
@@ -43,9 +40,22 @@ const client = new SuiClient({ url: RPC, network: 'mainnet' });
 
 /** Per-protocol allocation refs, sourced from deployments/mainnet-v2.env. */
 function refsFor(): AllocationRefs {
-  const base = { coinType: USDC, registryId: REGISTRY, treasuryId: TREASURY, enclaveId: ENCLAVE, agentCapId: AGENTCAP };
+  const base = {
+    coinType: USDC,
+    registryId: REGISTRY,
+    treasuryId: TREASURY,
+    enclaveId: ENCLAVE,
+    agentCapId: AGENTCAP
+  };
   if (PROTOCOL === 'scallop')
-    return { scallop: { ...base, packageId: env('SCALLOP_ADAPTER_PKG'), versionId: env('SCALLOP_VERSION'), marketId: env('SCALLOP_MARKET') } };
+    return {
+      scallop: {
+        ...base,
+        packageId: env('SCALLOP_ADAPTER_PKG'),
+        versionId: env('SCALLOP_VERSION'),
+        marketId: env('SCALLOP_MARKET')
+      }
+    };
   if (PROTOCOL === 'navi')
     return {
       navi: {
@@ -72,10 +82,19 @@ function refsFor(): AllocationRefs {
 
 async function main() {
   console.log(`\n=== ${PROTOCOL.toUpperCase()} supply through the split path (mainnet) ===`);
-  const treasury = new TreasuryClient({ suiClient: client, treasuryId: TREASURY, agentCapId: AGENTCAP, enclaveUrl: ENCLAVE_URL });
+  const treasury = new TreasuryClient({
+    suiClient: client,
+    treasuryId: TREASURY,
+    agentCapId: AGENTCAP,
+    enclaveUrl: ENCLAVE_URL
+  });
 
   const budget = await treasury.readBudget(Date.now());
-  console.log('budget:', { deployable: budget.deployableRaw.toString(), perTxCap: budget.state.perTxCapRaw.toString(), canSupply: budget.canSupply });
+  console.log('budget:', {
+    deployable: budget.deployableRaw.toString(),
+    perTxCap: budget.state.perTxCapRaw.toString(),
+    canSupply: budget.canSupply
+  });
   if (!budget.canSupply) throw new Error(`cannot supply: ${budget.reason}`);
 
   // A reserve curve so the TEE optimizer allocates the budget to THIS protocol (the only curve given).
@@ -83,7 +102,11 @@ async function main() {
     protocol: PROTOCOL,
     asset: 'USDC',
     coinType: USDC,
-    borrowAprPoints: [{ util: 0, apr: 1 }, { util: 0.8, apr: 5 }, { util: 1, apr: 20 }],
+    borrowAprPoints: [
+      { util: 0, apr: 1 },
+      { util: 0.8, apr: 5 },
+      { util: 1, apr: 20 }
+    ],
     reserveFactorPct: 20,
     borrowedRaw: '1000000000',
     availableLiquidityRaw: '5000000000',
@@ -105,14 +128,23 @@ async function main() {
     timestampMs: TS
   });
 
-  console.log('TEE key:', `0x${decided.publicKey.replace(/^0x/, '')}`, '| match on-chain:',
+  console.log(
+    'TEE key:',
+    `0x${decided.publicKey.replace(/^0x/, '')}`,
+    '| match on-chain:',
     (await client.getObject({ id: ENCLAVE, options: { showContent: true } })).data?.content
-      ? '(checked)' : '?');
+      ? '(checked)'
+      : '?'
+  );
 
   const want = PROTOCOL_ID[PROTOCOL];
   const legs = decided.legs.filter((l) => l.intent.protocolId === want);
-  if (legs.length === 0) throw new Error(`enclave returned no ${PROTOCOL} leg (got protocolIds ${decided.legs.map((l) => l.intent.protocolId)})`);
-  for (const l of legs) console.log(`  leg: protocol ${l.intent.protocolId} amount ${l.intent.amount} nonce ${l.intent.nonce}`);
+  if (legs.length === 0)
+    throw new Error(
+      `enclave returned no ${PROTOCOL} leg (got protocolIds ${decided.legs.map((l) => l.intent.protocolId)})`
+    );
+  for (const l of legs)
+    console.log(`  leg: protocol ${l.intent.protocolId} amount ${l.intent.amount} nonce ${l.intent.nonce}`);
 
   // Suilend deposit recomputes ctoken value vs the reserve price and aborts if stale, so
   // prepend a Pyth refresh_reserve_price in the SAME PTB (PTB commands run in order).
@@ -120,7 +152,11 @@ async function main() {
   if (PROTOCOL === 'suilend') {
     const grpc = new SuiGrpcClient({ network: 'mainnet', baseUrl: RPC });
     const sclient = await SuilendClient.initialize(LENDING_MARKET_ID, LENDING_MARKET_TYPE, grpc as never);
-    await sclient.refreshReservePrices(tx as never, env('SUILEND_PYTH_PRICE_INFO'), BigInt(env('SUILEND_RESERVE_INDEX')));
+    await sclient.refreshReservePrices(
+      tx as never,
+      env('SUILEND_PYTH_PRICE_INFO'),
+      BigInt(env('SUILEND_RESERVE_INDEX'))
+    );
     console.log('  (prepended Suilend reserve price refresh)');
   }
 
@@ -129,11 +165,19 @@ async function main() {
 
   if (process.env.SUBMIT === '1') {
     const pk = env('AGENT_SUI_PRIVATE_KEY');
-    const signer = pk.startsWith('suiprivkey') ? Ed25519Keypair.fromSecretKey(pk) : Ed25519Keypair.fromSecretKey(fromHex(pk.replace(/^0x/, '')));
-    if (signer.getPublicKey().toSuiAddress() !== AGENT_ADDR) throw new Error('AGENT_SUI_PRIVATE_KEY does not derive AGENT_ADDR');
-    const r = await client.signAndExecuteTransaction({ signer, transaction: tx, options: { showEffects: true, showBalanceChanges: true } });
+    const signer = pk.startsWith('suiprivkey')
+      ? Ed25519Keypair.fromSecretKey(pk)
+      : Ed25519Keypair.fromSecretKey(fromHex(pk.replace(/^0x/, '')));
+    if (signer.getPublicKey().toSuiAddress() !== AGENT_ADDR)
+      throw new Error('AGENT_SUI_PRIVATE_KEY does not derive AGENT_ADDR');
+    const r = await client.signAndExecuteTransaction({
+      signer,
+      transaction: tx,
+      options: { showEffects: true, showBalanceChanges: true }
+    });
     console.log(`\n${PROTOCOL} SUPPLY ->`, r.effects?.status, '| tx:', r.digest);
-    for (const b of r.balanceChanges ?? []) console.log('  ', b.coinType.split('::').pop(), b.amount, '->', b.owner);
+    for (const b of r.balanceChanges ?? [])
+      console.log('  ', b.coinType.split('::').pop(), b.amount, '->', b.owner);
   } else {
     const built = await tx.build({ client });
     const res = await client.dryRunTransactionBlock({ transactionBlock: built });

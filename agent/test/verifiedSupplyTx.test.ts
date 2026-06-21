@@ -83,7 +83,7 @@ describe('buildVerifiedSupplyTx structural', () => {
     expect(commands).toHaveLength(1);
   });
 
-  it('MoveCall targets decision::verified_supply_entry', () => {
+  it('MoveCall targets mock_supply::verified_supply_mock_entry', () => {
     const tx = buildVerifiedSupplyTx(REFS, INTENT, 1_700_000_000_000n, SIG_HEX);
     const commands =
       tx.getData().commands ?? (tx.getData() as { transactions?: unknown[] }).transactions ?? [];
@@ -91,8 +91,8 @@ describe('buildVerifiedSupplyTx structural', () => {
       commands as Array<{ MoveCall?: { module: string; function: string; typeArguments: string[] } }>
     )[0];
     expect(cmd?.MoveCall).toBeDefined();
-    expect(cmd?.MoveCall?.module).toBe('decision');
-    expect(cmd?.MoveCall?.function).toBe('verified_supply_entry');
+    expect(cmd?.MoveCall?.module).toBe('mock_supply');
+    expect(cmd?.MoveCall?.function).toBe('verified_supply_mock_entry');
   });
 
   it('uses the correct coin type argument', () => {
@@ -117,10 +117,10 @@ describe('buildVerifiedSupplyTx structural', () => {
 });
 
 describe('buildVerifiedSupplySuilendTx structural', () => {
-  it('MoveCall targets decision::verified_supply_suilend_entry', () => {
+  it('MoveCall targets suilend_adapter::verified_supply_suilend_entry', () => {
     const tx = buildVerifiedSupplySuilendTx(SUILEND_REFS, INTENT, 1_700_000_000_000n, SIG_HEX);
     const cmd = commandsOf(tx)[0];
-    expect(cmd?.MoveCall?.module).toBe('decision');
+    expect(cmd?.MoveCall?.module).toBe('suilend_adapter');
     expect(cmd?.MoveCall?.function).toBe('verified_supply_suilend_entry');
   });
 
@@ -138,10 +138,10 @@ describe('buildVerifiedSupplySuilendTx structural', () => {
 });
 
 describe('buildVerifiedSupplyScallopTx structural', () => {
-  it('MoveCall targets decision::verified_supply_scallop_entry', () => {
+  it('MoveCall targets scallop_adapter::verified_supply_scallop_entry', () => {
     const tx = buildVerifiedSupplyScallopTx(SCALLOP_REFS, INTENT, 1_700_000_000_000n, SIG_HEX);
     const cmd = commandsOf(tx)[0];
-    expect(cmd?.MoveCall?.module).toBe('decision');
+    expect(cmd?.MoveCall?.module).toBe('scallop_adapter');
     expect(cmd?.MoveCall?.function).toBe('verified_supply_scallop_entry');
   });
 
@@ -159,10 +159,10 @@ describe('buildVerifiedSupplyScallopTx structural', () => {
 });
 
 describe('buildVerifiedSupplyNaviTx structural', () => {
-  it('MoveCall targets decision::verified_supply_navi_entry', () => {
+  it('MoveCall targets navi_adapter::verified_supply_navi_entry', () => {
     const tx = buildVerifiedSupplyNaviTx(NAVI_REFS, INTENT, 1_700_000_000_000n, SIG_HEX);
     const cmd = commandsOf(tx)[0];
-    expect(cmd?.MoveCall?.module).toBe('decision');
+    expect(cmd?.MoveCall?.module).toBe('navi_adapter');
     expect(cmd?.MoveCall?.function).toBe('verified_supply_navi_entry');
   });
 

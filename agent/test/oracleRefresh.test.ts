@@ -82,13 +82,13 @@ describe('buildVerifiedAllocationTx prepend seam', () => {
     const cmds = commandsOf(out);
     expect(cmds).toHaveLength(2);
     expect(cmds[0]?.SplitCoins).toBeDefined(); // prelude stays first
-    expect(cmds[1]?.MoveCall?.function).toBe('verified_supply_entry'); // supply appended after
+    expect(cmds[1]?.MoveCall?.function).toBe('verified_supply_mock_entry'); // supply appended after
   });
 
   it('still works with no prelude (fresh tx default)', () => {
     const out = buildVerifiedAllocationTx([leg(255)], { mock: REFS }, 1_700_000_000_000n);
     const cmds = commandsOf(out);
     expect(cmds).toHaveLength(1);
-    expect(cmds[0]?.MoveCall?.function).toBe('verified_supply_entry');
+    expect(cmds[0]?.MoveCall?.function).toBe('verified_supply_mock_entry');
   });
 });

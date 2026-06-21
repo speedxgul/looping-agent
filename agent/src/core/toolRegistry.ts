@@ -31,9 +31,9 @@ import {
 import { netSupplyApr, type ReserveCurve, solveAllocation } from './allocation.js';
 import type { SaveOptions } from './memoryStore.js';
 import { evaluateActionPolicy } from './policy.js';
-import { treasuryToolDefinitions, treasuryToolHandlers } from './treasuryTools.js';
 import { StrategyLedgerStore } from './strategyLedger.js';
 import { buildLoopProposal, claimAndExecuteAcceptedPlan, validateLoopProposal } from './subagents.js';
+import { treasuryToolDefinitions, treasuryToolHandlers } from './treasuryTools.js';
 
 const PROTOCOLS: LendingProtocol[] = ['suilend', 'navi', 'scallop'];
 

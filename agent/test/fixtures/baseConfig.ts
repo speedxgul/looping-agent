@@ -84,9 +84,22 @@ export function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       enclaveId: '',
       enclaveUrl: '',
       protocols: {
-        suilend: { adapterPackageId: '', marketType: '', lendingMarketId: '', reserveArrayIndex: 0, pythPriceInfoObjectId: '' },
+        suilend: {
+          adapterPackageId: '',
+          marketType: '',
+          lendingMarketId: '',
+          reserveArrayIndex: 0,
+          pythPriceInfoObjectId: ''
+        },
         scallop: { adapterPackageId: '', versionId: '', marketId: '' },
-        navi: { adapterPackageId: '', storageId: '', poolId: '', incentiveV2Id: '', incentiveV3Id: '', assetId: 0 }
+        navi: {
+          adapterPackageId: '',
+          storageId: '',
+          poolId: '',
+          incentiveV2Id: '',
+          incentiveV3Id: '',
+          assetId: 0
+        }
       }
     },
     walrus: {
