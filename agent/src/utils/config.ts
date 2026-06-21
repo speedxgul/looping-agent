@@ -16,7 +16,15 @@ export function loadConfig(): AppConfig {
     runtime: {
       dryRun: readBoolean('DRY_RUN', true),
       nodeEnv: readString('NODE_ENV', 'development'),
-      autonomyIntervalMs: readNumber('AUTONOMY_INTERVAL_MS', 900000)
+      autonomyIntervalMs: readNumber('AUTONOMY_INTERVAL_MS', 900000),
+      subagentIntervalsMs: {
+        coordinator: readNumber('COORDINATOR_INTERVAL_MS', 300000),
+        'rate-scout': readNumber('RATE_SCOUT_INTERVAL_MS', 600000),
+        'position-risk': readNumber('POSITION_RISK_INTERVAL_MS', 180000),
+        'loop-strategist': readNumber('LOOP_STRATEGIST_INTERVAL_MS', 900000),
+        executor: readNumber('EXECUTOR_INTERVAL_MS', 60000),
+        'unwind-guard': readNumber('UNWIND_GUARD_INTERVAL_MS', 60000)
+      }
     },
     logLevel: readString('LOG_LEVEL', 'info'),
     agent: {
@@ -93,6 +101,22 @@ export function loadConfig(): AppConfig {
         relayerUrl: readString('MEMWAL_RELAYER_URL', 'https://relayer-staging.memory.walrus.xyz'),
         namespace: readString('MEMWAL_NAMESPACE', 'defi-agent')
       }
+    },
+    loopStrategy: {
+      ledgerPath: readString('STRATEGY_LEDGER_PATH', 'data/strategy-ledger.json'),
+      enabled: readBoolean('LOOP_STRATEGY_ENABLED', false),
+      executionEnabled: readBoolean('LOOP_EXECUTION_ENABLED', false),
+      collateralAsset: readString('LOOP_COLLATERAL_ASSET', 'usdc').toLowerCase(),
+      borrowAsset: readString('LOOP_BORROW_ASSET', 'sui').toLowerCase(),
+      maxDepth: readNumber('LOOP_MAX_DEPTH', 1),
+      minHealthFactor: readNumber('LOOP_MIN_HEALTH_FACTOR', 1.75),
+      criticalHealthFactor: readNumber('LOOP_CRITICAL_HEALTH_FACTOR', 1.45),
+      maxBorrowUsd: readNumber('LOOP_MAX_BORROW_USD', 25),
+      maxCollateralUsd: readNumber('LOOP_MAX_COLLATERAL_USD', 100),
+      minNetAprBps: readNumber('LOOP_MIN_NET_APR_BPS', 100),
+      proposalTtlMs: readNumber('LOOP_PROPOSAL_TTL_MS', 300000),
+      staleHeartbeatMs: readNumber('SUBAGENT_STALE_HEARTBEAT_MS', 600000),
+      staleSnapshotMs: readNumber('LOOP_STALE_SNAPSHOT_MS', 600000)
     }
   };
 }

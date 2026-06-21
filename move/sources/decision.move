@@ -95,11 +95,19 @@ fun consume_nonce(registry: &mut DecisionRegistry, treasury: ID, nonce: u64) {
 #[test_only]
 use std::bcs;
 #[test_only]
-use std::unit_test::{assert_eq, destroy};
+use std::unit_test::assert_eq;
 
 #[test_only]
 fun new_registry(ctx: &mut TxContext): DecisionRegistry {
     DecisionRegistry { id: object::new(ctx), last_nonce: table::new(ctx) }
+}
+
+#[test_only]
+fun destroy_registry(mut reg: DecisionRegistry, treasury: ID) {
+    let _nonce = reg.last_nonce.remove(treasury);
+    let DecisionRegistry { id, last_nonce } = reg;
+    last_nonce.destroy_empty();
+    id.delete();
 }
 
 /// Pins the wire format the enclave must reproduce: a DecisionPayload is
@@ -148,7 +156,7 @@ fun nonce_strictly_increases() {
     consume_nonce(&mut reg, t, 1);
     consume_nonce(&mut reg, t, 2);
     consume_nonce(&mut reg, t, 99);
-    destroy(reg);
+    destroy_registry(reg, t);
 }
 
 #[test, expected_failure(abort_code = EReplayedOrStaleNonce)]
