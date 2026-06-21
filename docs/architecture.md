@@ -24,46 +24,68 @@ The system separates **autonomous decision-making** from **protocol access** and
 
 ## 1. The big picture
 
+Thick arrows are the fund path (proposal → gate → execute → custody); dotted arrows are
+feedback, coordination, and persistence.
+
 ```mermaid
 flowchart TB
-    subgraph DECIDE["Decision layer"]
+    subgraph DECIDE["Decision layer · proposes, never moves funds"]
         Main["Main agent<br/><i>LLM tool-calling loop</i><br/>autonomousAgent.ts"]
-        Pipe["Subagent pipeline<br/><i>6 deterministic roles</i><br/>subagents.ts"]
+        subgraph PIPE["Subagent pipeline · subagents.ts"]
+            direction LR
+            RS["rate-scout<br/><i>market snapshot</i>"]
+            PR["position-risk<br/><i>HF · limits</i>"]
+            LS["loop-strategist<br/><i>proposes loops</i>"]
+            CO["coordinator<br/><i>validates · accepts</i>"]
+            EX["executor<br/><i>opens positions</i>"]
+            UG["unwind-guard<br/><i>HF safety net</i>"]
+            RS --> LS
+            PR --> LS
+            LS --> CO --> EX
+            UG -. risk lock .-> CO
+        end
     end
 
-    subgraph ENFORCE["Enforcement layer (deterministic)"]
+    subgraph ENFORCE["Enforcement layer · deterministic"]
         Policy["policy.ts<br/><i>caps · allowlists · HF gates</i>"]
-        Health["healthGuard.ts<br/><i>auto-repay on HF drop</i>"]
         Alloc["allocation.ts<br/><i>own-impact-aware optimizer</i>"]
-        Ledger["strategyLedger.ts<br/><i>proposals · plans · receipts</i>"]
+        Health["healthGuard.ts<br/><i>auto-repay on HF drop</i>"]
+        Ledger[("strategyLedger.ts<br/><i>proposals · plans · receipts</i>")]
     end
 
-    subgraph ACCESS["Protocol access (clients/)"]
-        Suilend["Suilend client"]
-        Navi["NAVI client"]
-        Scallop["Scallop client"]
-        Sui["Sui execution<br/><i>sign · submit</i>"]
+    subgraph ACCESS["Protocol access · clients/"]
+        Clients["Suilend · NAVI · Scallop<br/><i>read + write clients</i>"]
+        Sui["Sui execution<br/><i>sign · submit PTB</i>"]
     end
+
+    Chain["On-chain Treasury · the choke-point<br/><i>verified_supply · receipt custody · owner-only withdraw</i>"]
 
     subgraph STATE["State & memory"]
-        File["JSON files<br/>data/"]
         Walrus["Walrus blobs<br/><i>verifiable history</i>"]
         MemWal["MemWal<br/><i>semantic memory</i>"]
     end
 
-    Main --> Policy & Health & Alloc & Ledger
-    Pipe --> Policy & Alloc & Ledger
-    Policy --> Suilend & Navi & Scallop
-    Health --> Suilend & Navi & Scallop
-    Suilend & Navi & Scallop --> Sui
-    Main & Pipe --> File & Walrus & MemWal
+    Main ==> Policy
+    EX ==> Policy
+    CO -. strategy ledger .-> Ledger
+    Policy ==> Alloc ==> Clients
+    Health -. auto-repay .-> Clients
+    Clients ==> Sui ==> Chain
+    Main -. state .-> Walrus
+    Main -. memory .-> MemWal
 
     classDef decide fill:#1f2937,stroke:#a78bfa,color:#fff;
+    classDef sub fill:#312e81,stroke:#c4b5fd,color:#ede9fe;
     classDef enforce fill:#064e3b,stroke:#10b981,color:#fff;
     classDef access fill:#0b3d91,stroke:#60a5fa,color:#fff;
-    class Main,Pipe decide;
-    class Policy,Health,Alloc,Ledger enforce;
-    class Suilend,Navi,Scallop,Sui access;
+    classDef chain fill:#7c2d12,stroke:#fb923c,color:#fff;
+    classDef state fill:#334155,stroke:#94a3b8,color:#fff;
+    class Main decide;
+    class RS,PR,LS,CO,EX,UG sub;
+    class Policy,Alloc,Health,Ledger enforce;
+    class Clients,Sui access;
+    class Chain chain;
+    class Walrus,MemWal state;
 ```
 
 There are **two decision engines** that share the same enforcement and access layers:

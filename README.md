@@ -30,6 +30,76 @@ Full design: [`docs/treasury-agent-design.md`](docs/treasury-agent-design.md) ·
 attestation runbook: [`docs/deploy-runbook.md`](docs/deploy-runbook.md). ~130 tests across
 Move + agent + enclave; live **Seal** is scaffolded (policy + wiring in place, key-load stubbed).
 
+## Architecture
+
+Two decision engines — an LLM main agent and a deterministic six-subagent pipeline — *propose*;
+a deterministic enforcement layer gates every fund move; the on-chain Treasury is the
+choke-point. Thick arrows are the fund path; dotted arrows are feedback, coordination, and
+persistence.
+
+```mermaid
+flowchart TB
+    subgraph DECIDE["Decision layer · proposes, never moves funds"]
+        Main["Main agent<br/><i>LLM tool-calling loop</i><br/>autonomousAgent.ts"]
+        subgraph PIPE["Subagent pipeline · subagents.ts"]
+            direction LR
+            RS["rate-scout<br/><i>market snapshot</i>"]
+            PR["position-risk<br/><i>HF · limits</i>"]
+            LS["loop-strategist<br/><i>proposes loops</i>"]
+            CO["coordinator<br/><i>validates · accepts</i>"]
+            EX["executor<br/><i>opens positions</i>"]
+            UG["unwind-guard<br/><i>HF safety net</i>"]
+            RS --> LS
+            PR --> LS
+            LS --> CO --> EX
+            UG -. risk lock .-> CO
+        end
+    end
+
+    subgraph ENFORCE["Enforcement layer · deterministic"]
+        Policy["policy.ts<br/><i>caps · allowlists · HF gates</i>"]
+        Alloc["allocation.ts<br/><i>own-impact-aware optimizer</i>"]
+        Health["healthGuard.ts<br/><i>auto-repay on HF drop</i>"]
+        Ledger[("strategyLedger.ts<br/><i>proposals · plans · receipts</i>")]
+    end
+
+    subgraph ACCESS["Protocol access · clients/"]
+        Clients["Suilend · NAVI · Scallop<br/><i>read + write clients</i>"]
+        Sui["Sui execution<br/><i>sign · submit PTB</i>"]
+    end
+
+    Chain["On-chain Treasury · the choke-point<br/><i>verified_supply · receipt custody · owner-only withdraw</i>"]
+
+    subgraph STATE["State & memory"]
+        Walrus["Walrus blobs<br/><i>verifiable history</i>"]
+        MemWal["MemWal<br/><i>semantic memory</i>"]
+    end
+
+    Main ==> Policy
+    EX ==> Policy
+    CO -. strategy ledger .-> Ledger
+    Policy ==> Alloc ==> Clients
+    Health -. auto-repay .-> Clients
+    Clients ==> Sui ==> Chain
+    Main -. state .-> Walrus
+    Main -. memory .-> MemWal
+
+    classDef decide fill:#1f2937,stroke:#a78bfa,color:#fff;
+    classDef sub fill:#312e81,stroke:#c4b5fd,color:#ede9fe;
+    classDef enforce fill:#064e3b,stroke:#10b981,color:#fff;
+    classDef access fill:#0b3d91,stroke:#60a5fa,color:#fff;
+    classDef chain fill:#7c2d12,stroke:#fb923c,color:#fff;
+    classDef state fill:#334155,stroke:#94a3b8,color:#fff;
+    class Main decide;
+    class RS,PR,LS,CO,EX,UG sub;
+    class Policy,Alloc,Health,Ledger enforce;
+    class Clients,Sui access;
+    class Chain chain;
+    class Walrus,MemWal state;
+```
+
+Full component map: [`docs/architecture.md`](docs/architecture.md).
+
 ## How the attested flow works
 
 **One-time: enclave attestation & registration.** The signing key is born inside the TEE and
