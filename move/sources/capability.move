@@ -10,7 +10,7 @@
 /// here is the off-chain `agent/src/core/policy.ts` spec ported on-chain.
 module treasury_agent::capability;
 
-use sui::balance::Balance;
+use sui::balance::{Self, Balance};
 use sui::clock::Clock;
 use sui::coin::Coin;
 use sui::event;
@@ -229,10 +229,45 @@ use sui::coin::mint_for_testing;
 #[test_only]
 use sui::sui::SUI;
 #[test_only]
-use std::unit_test::{assert_eq, destroy};
+use std::unit_test::assert_eq;
 
 #[test_only]
 const DAY_MS: u64 = 86_400_000;
+
+#[test_only]
+fun destroy_treasury_for_testing<T>(treasury: Treasury<T>) {
+    let Treasury {
+        id,
+        owner: _,
+        agent: _,
+        funds,
+        per_tx_cap: _,
+        period_cap: _,
+        period_ms: _,
+        expiry_ms: _,
+        spent_in_period: _,
+        period_start_ms: _,
+    } = treasury;
+    balance::destroy_for_testing(funds);
+    id.delete();
+}
+
+#[test_only]
+fun destroy_owner_cap_for_testing(owner_cap: OwnerCap) {
+    let OwnerCap { id, treasury: _ } = owner_cap;
+    id.delete();
+}
+
+#[test_only]
+fun destroy_agent_cap_for_testing(agent_cap: AgentCap) {
+    let AgentCap { id, treasury: _ } = agent_cap;
+    id.delete();
+}
+
+#[test_only]
+fun destroy_coin_for_testing<T>(coin: Coin<T>) {
+    balance::destroy_for_testing(coin.into_balance());
+}
 
 #[test]
 fun release_within_bounds() {
@@ -246,10 +281,10 @@ fun release_within_bounds() {
     assert_eq!(released.value(), 100);
     assert_eq!(treasury.balance(), 900);
 
-    destroy(released);
-    destroy(treasury);
-    destroy(owner_cap);
-    destroy(agent_cap);
+    destroy_coin_for_testing(released);
+    destroy_treasury_for_testing(treasury);
+    destroy_owner_cap_for_testing(owner_cap);
+    destroy_agent_cap_for_testing(agent_cap);
     clock.destroy_for_testing();
 }
 

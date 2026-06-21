@@ -13,6 +13,14 @@ export type MemoryBackend = 'file' | 'walrus';
 export type SuiNetwork = 'mainnet' | 'testnet' | 'devnet';
 export type LendingProtocol = 'suilend' | 'navi' | 'scallop';
 export type PositionActionKind = 'supply' | 'withdraw' | 'borrow' | 'repay';
+export type SubagentRole =
+  | 'coordinator'
+  | 'rate-scout'
+  | 'position-risk'
+  | 'loop-strategist'
+  | 'executor'
+  | 'unwind-guard';
+export type StrategyExecutionActor = SubagentRole | 'main-agent';
 
 export type Logger = ReturnType<typeof createLogger>;
 
@@ -21,6 +29,8 @@ export interface AppConfig {
     dryRun: boolean;
     nodeEnv: string;
     autonomyIntervalMs: number;
+    subagentIntervalsMs?: Record<SubagentRole, number>;
+    supervisorRoles?: Array<SubagentRole | 'main'>;
   };
   logLevel: string;
   agent: {
@@ -86,6 +96,27 @@ export interface AppConfig {
       relayerUrl: string;
       namespace: string;
     };
+  };
+  loopStrategy: {
+    ledgerPath: string;
+    enabled: boolean;
+    executionEnabled: boolean;
+    collateralAsset: string;
+    borrowAsset: string;
+    maxDepth: number;
+    minHealthFactor: number;
+    criticalHealthFactor: number;
+    maxBorrowUsd: number;
+    maxCollateralUsd: number;
+    minNetAprBps: number;
+    proposalTtlMs: number;
+    staleHeartbeatMs: number;
+    staleSnapshotMs: number;
+    useExistingCollateral: boolean;
+    borrowCapacityFraction: number;
+    executionClaimTtlMs: number;
+    llmStrategistEnabled: boolean;
+    mainAgentSupplyWhenLoopEnabled: boolean;
   };
 }
 

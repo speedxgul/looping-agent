@@ -9,6 +9,7 @@
     "start": "bun src/index.ts",
     "run:once": "bun src/index.ts run-once",
     "run:daemon": "bun src/index.ts run-daemon",
+    "run:supervisor": "bun src/index.ts run-supervisor",
     "account:address": "bun src/index.ts account:address",
     "doctor": "bun src/index.ts doctor",
     "rates": "bun scripts/check-suilend-rates.ts",
