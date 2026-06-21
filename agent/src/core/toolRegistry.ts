@@ -442,16 +442,36 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
     }
   };
 
-  // Non-custodial path: register the treasury tools (and expose their schemas) only when
-  // TREASURY_MODE is on. The wallet tools above stay registered, so the two modes coexist.
+  // Two mutually-exclusive write flows, switched by TREASURY_MODE:
+  //   - ON  (attested/non-custodial): funds live in the Treasury; the ONLY write path is the
+  //          enclave-attested `treasury_supply`. The wallet `lending_*`/`suilend_*` write tools
+  //          are hidden so the agent can't move its own wallet funds directly.
+  //   - OFF (normal/custodial): the agent supplies its own wallet funds via the SDK-backed
+  //          `lending_*` tools; the treasury tools are absent.
+  // Read tools (rates, positions, balances, allocation) are exposed in both and are
+  // treasury-aware when TREASURY_MODE is on.
   const treasuryEnabled = config.treasury.enabled && clients.treasury !== null;
   if (treasuryEnabled) {
     Object.assign(handlers, treasuryToolHandlers({ config, clients, logger }));
   }
 
+  // Wallet-direct write tools — suppressed in attested treasury mode.
+  const WALLET_WRITE_TOOLS = new Set([
+    'lending_supply',
+    'lending_withdraw',
+    'lending_borrow',
+    'lending_repay',
+    'suilend_supply',
+    'suilend_withdraw',
+    'suilend_borrow',
+    'suilend_repay'
+  ]);
+
   return {
     definitions: (): OpenAIToolDefinition[] =>
-      treasuryEnabled ? [...definitions(), ...treasuryToolDefinitions()] : definitions(),
+      treasuryEnabled
+        ? [...definitions().filter((d) => !WALLET_WRITE_TOOLS.has(d.name)), ...treasuryToolDefinitions()]
+        : definitions(),
     async execute(toolCall: OpenAIFunctionCallItem): Promise<Record<string, unknown>> {
       const handler = handlers[toolCall.name];
       if (!handler) {

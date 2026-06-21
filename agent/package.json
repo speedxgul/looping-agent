@@ -19,7 +19,8 @@
     "typecheck": "tsc --noEmit",
     "check": "biome check src test scripts",
     "check:fix": "biome check --write src test scripts",
-    "postinstall": "node scripts/patch-mysten-sui-client.mjs"
+    "postinstall": "node scripts/patch-mysten-sui-client.mjs",
+    "treasury": "bun scripts/treasury.ts"
   },
   "engines": {
     "bun": ">=1.3.1"
