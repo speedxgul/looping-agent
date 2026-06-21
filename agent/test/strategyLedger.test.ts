@@ -59,6 +59,34 @@ describe('StrategyLedgerStore', () => {
     expect(store.load().marketSnapshots).toHaveLength(20);
   });
 
+  test('clears abandoned ledger lock owned by a dead process', async () => {
+    const ledgerPath = tempLedgerPath();
+    const config = loopConfig(ledgerPath);
+    fs.writeFileSync(
+      `${ledgerPath}.lock`,
+      JSON.stringify({ pid: 99999999, createdAt: new Date(Date.now() - 60000).toISOString() })
+    );
+    const store = new StrategyLedgerStore({
+      config,
+      logger: quietLogger(),
+      lockTimeoutMs: 250,
+      lockRetryMs: 10,
+      staleLockMs: 1000
+    });
+
+    await store.update((ledger) => {
+      ledger.marketSnapshots.unshift({
+        id: 'after-stale-lock',
+        runId: 'after-stale-lock',
+        capturedAt: new Date().toISOString(),
+        rates: []
+      });
+    });
+
+    expect(fs.existsSync(`${ledgerPath}.lock`)).toBe(false);
+    expect(first(store.load().marketSnapshots).id).toBe('after-stale-lock');
+  });
+
   test('detects stale subagent heartbeats', () => {
     const config = loopConfig(tempLedgerPath());
     const ledger = createEmptyStrategyLedger(config);
@@ -114,6 +142,28 @@ describe('loop proposal policy', () => {
     expect(proposal?.projectedHealthFactor).toBe(4);
   });
 
+  test('caps fresh open-loop proposal by wallet USDC and global raw SUI borrow limit', () => {
+    const config = loopConfig(tempLedgerPath());
+    config.loopStrategy.maxCollateralUsd = 100;
+    config.loopStrategy.maxBorrowUsd = 25;
+    config.sui.maxBorrowRaw = 2_000_000n;
+    const ledger = seededLedger(config);
+
+    const proposal = buildLoopProposal({
+      config,
+      runId: 'strategy-wallet-cap',
+      market: first(ledger.marketSnapshots),
+      positions: first(ledger.positionSnapshots),
+      walletBalances: walletBalances({ usdcRaw: '50539115' })
+    });
+
+    expect(proposal?.proposalType).toBe('open_loop');
+    expect(proposal?.collateralUsd).toBe(50.539115);
+    expect(proposal?.rawCollateralAmount).toBe('50539115');
+    expect(proposal?.rawBorrowAmount).toBe('2000000');
+    expect(proposal?.borrowUsd).toBe(0.002);
+  });
+
   test('rejects expired, low-HF, low-APR, oversized, same-protocol, and stale-snapshot plans', () => {
     const config = loopConfig(tempLedgerPath());
     const ledger = seededLedger(config);
@@ -131,6 +181,9 @@ describe('loop proposal policy', () => {
     expect(validateLoopProposal({ ...valid, borrowUsd: 26 }, ledger, config).reason).toContain(
       'LOOP_MAX_BORROW_USD'
     );
+    expect(
+      validateLoopProposal({ ...valid, rawBorrowAmount: '25000000001' }, ledger, config).reason
+    ).toContain('SUI_MAX_BORROW_AMOUNT_RAW');
     expect(
       validateLoopProposal({ ...valid, supplyTargetProtocol: valid.collateralProtocol }, ledger, config)
         .reason
@@ -216,9 +269,160 @@ describe('loop proposal policy', () => {
     expect(saved.acceptedPlans[0]?.status).toBe('executed');
     expect([main.claimed, executor.claimed].filter(Boolean)).toHaveLength(1);
   });
+
+  test('live executor does not reclaim expired executing plan after interruption', async () => {
+    const config = loopConfig(tempLedgerPath());
+    config.runtime.dryRun = false;
+    config.sui.enableBorrow = true;
+    config.loopStrategy.executionEnabled = true;
+    const store = new StrategyLedgerStore({ config, logger: quietLogger() });
+    const ledger = seededLedger(config);
+    const proposal = validProposal(ledger, 'interrupted');
+    ledger.strategyProposals.unshift({ ...proposal, status: 'accepted' });
+    ledger.acceptedPlans.unshift({
+      id: `plan-${proposal.id}`,
+      proposalId: proposal.id,
+      acceptedAt: new Date(Date.now() - 10_000).toISOString(),
+      status: 'executing',
+      policy: { allowed: true, reason: 'test', checkedAt: new Date().toISOString() },
+      executorRunId: 'interrupted-run',
+      claimedBy: 'executor',
+      claimedAt: new Date(Date.now() - 10_000).toISOString(),
+      claimExpiresAt: new Date(Date.now() - 1_000).toISOString(),
+      executionFingerprint: 'interrupted-fingerprint'
+    });
+    store.save(ledger);
+
+    const result = await claimAndExecuteAcceptedPlan({
+      ...tickOptions(config, store, mockClients()),
+      actor: 'executor',
+      runId: 'retry-live'
+    });
+
+    const saved = store.load();
+    expect(result.claimed).toBe(false);
+    expect(saved.executionReceipts).toHaveLength(0);
+    expect(first(saved.acceptedPlans).status).toBe('executing');
+  });
+
+  test('coordinator reconciles expired executing live plan from latest positions', async () => {
+    const config = loopConfig(tempLedgerPath());
+    config.runtime.dryRun = false;
+    config.sui.enableBorrow = true;
+    config.loopStrategy.executionEnabled = true;
+    const store = new StrategyLedgerStore({ config, logger: quietLogger() });
+    const ledger = seededLedger(config);
+    const proposal = validProposal(ledger, 'reconcile');
+    ledger.strategyProposals.unshift({ ...proposal, status: 'accepted' });
+    ledger.acceptedPlans.unshift({
+      id: `plan-${proposal.id}`,
+      proposalId: proposal.id,
+      acceptedAt: new Date(Date.now() - 10_000).toISOString(),
+      status: 'executing',
+      policy: { allowed: true, reason: 'test', checkedAt: new Date().toISOString() },
+      executorRunId: 'interrupted-run',
+      claimedBy: 'executor',
+      claimedAt: new Date(Date.now() - 10_000).toISOString(),
+      claimExpiresAt: new Date(Date.now() - 1_000).toISOString(),
+      executionFingerprint: 'interrupted-fingerprint'
+    });
+    ledger.positionSnapshots.unshift({
+      id: 'positions-reconciled',
+      runId: 'positions-reconciled',
+      walletAddress: config.agent.walletAddress,
+      capturedAt: new Date().toISOString(),
+      protocols: [
+        {
+          protocol: proposal.collateralProtocol,
+          healthFactor: 10,
+          borrowLimitUsd: 100,
+          weightedBorrowsUsd: proposal.borrowUsd,
+          depositedAmountUsd: proposal.collateralUsd,
+          borrowedAmountUsd: proposal.borrowUsd,
+          deposits: [
+            {
+              protocol: proposal.collateralProtocol,
+              asset: 'USDC',
+              coinType: 'usdc-coin',
+              rawAmount: proposal.rawCollateralAmount,
+              amountUsd: proposal.collateralUsd,
+              side: 'deposit'
+            }
+          ],
+          borrows: [
+            {
+              protocol: proposal.collateralProtocol,
+              asset: 'SUI',
+              coinType: 'sui-coin',
+              rawAmount: proposal.rawBorrowAmount,
+              amountUsd: proposal.borrowUsd,
+              side: 'borrow'
+            }
+          ]
+        },
+        {
+          protocol: proposal.supplyTargetProtocol,
+          healthFactor: Number.POSITIVE_INFINITY,
+          borrowLimitUsd: 0,
+          weightedBorrowsUsd: 0,
+          depositedAmountUsd: proposal.borrowUsd,
+          borrowedAmountUsd: 0,
+          deposits: [
+            {
+              protocol: proposal.supplyTargetProtocol,
+              asset: 'SUI',
+              coinType: 'sui-coin',
+              rawAmount: proposal.rawBorrowAmount,
+              amountUsd: proposal.borrowUsd,
+              side: 'deposit'
+            }
+          ],
+          borrows: []
+        }
+      ]
+    });
+    store.save(ledger);
+
+    const summary = await runCoordinator(tickOptions(config, store, mockClients()), 'reconcile-run');
+
+    const saved = store.load();
+    expect(summary.action).toBe('reconciled_expired_execution_claims');
+    expect(first(saved.acceptedPlans).status).toBe('executed');
+    expect(first(saved.executionReceipts).status).toBe('confirmed');
+    expect(first(saved.loopPositions).planId).toBe(first(saved.acceptedPlans).id);
+  });
 });
 
 describe('subagent integration flow', () => {
+  test('LLM strategist decline falls back to deterministic policy-valid proposal', async () => {
+    const config = loopConfig(tempLedgerPath());
+    config.loopStrategy.llmStrategistEnabled = true;
+    config.openai.apiKey = 'test-key';
+    const store = new StrategyLedgerStore({ config, logger: quietLogger() });
+    const clients = {
+      ...mockClients({ suilendHealthFactor: 2.5 }),
+      openai: {
+        create: async () => ({
+          output_text: '{"openLoop": false, "rationale": "spread is too small for my taste"}',
+          output: []
+        })
+      }
+    } as unknown as Clients;
+    const options = tickOptions(config, store, clients);
+
+    await runRateScout(options, 'rates-llm-decline');
+    await runPositionRisk(options, 'positions-llm-decline');
+    const summary = await runLoopStrategist(options, 'strategy-llm-decline');
+
+    const ledger = store.load();
+    expect(summary.action).toBe('proposal_created');
+    expect(summary.decidedBy).toBe('deterministic_after_llm_decline');
+    expect(first(ledger.strategyProposals).status).toBe('open');
+    expect(first(ledger.strategyProposals).projectedNetAprBps).toBeGreaterThanOrEqual(
+      config.loopStrategy.minNetAprBps
+    );
+  });
+
   test('scout, risk, strategist, coordinator, executor, and unwind guard update the shared ledger', async () => {
     const config = loopConfig(tempLedgerPath());
     const clients = mockClients({ suilendHealthFactor: 2.5 });
@@ -253,6 +457,48 @@ describe('subagent integration flow', () => {
     expect(first(ledger.riskLocks).active).toBe(true);
     expect(first(ledger.riskLocks).severity).toBe('critical');
   });
+
+  test('unwind guard clears stale critical risk locks when latest snapshot is no longer critical', async () => {
+    const config = loopConfig(tempLedgerPath());
+    const store = new StrategyLedgerStore({ config, logger: quietLogger() });
+    await store.update((ledger) => {
+      ledger.loopPositions.unshift({
+        id: 'loop-risk-clear',
+        planId: 'plan-risk-clear',
+        proposalId: 'proposal-risk-clear',
+        openedAt: new Date().toISOString(),
+        status: 'active',
+        collateralProtocol: 'suilend',
+        supplyTargetProtocol: 'navi',
+        collateralAsset: 'USDC',
+        borrowAsset: 'SUI',
+        rawCollateralAmount: '100000000',
+        rawBorrowAmount: '10000000000',
+        borrowUsd: 10,
+        depth: 1
+      });
+    });
+
+    const critical = mockClients({ suilendHealthFactor: 1.2, suilendBorrowUsd: 10 });
+    await runPositionRisk(tickOptions(config, store, critical), 'positions-critical-clear');
+    await runUnwindGuard(tickOptions(config, store, critical), 'unwind-critical');
+
+    let ledger = store.load();
+    expect(first(ledger.riskLocks).active).toBe(true);
+    expect(first(ledger.loopPositions).status).toBe('unwinding');
+
+    const healthy = mockClients({ suilendHealthFactor: 2.5, suilendBorrowUsd: 10 });
+    await runPositionRisk(tickOptions(config, store, healthy), 'positions-healthy-clear');
+    const summary = await runUnwindGuard(tickOptions(config, store, healthy), 'unwind-healthy');
+
+    ledger = store.load();
+    expect(summary.action).toBe('risk_locks_cleared');
+    expect(summary.reactivatedLoopCount).toBe(1);
+    expect(first(ledger.riskLocks).active).toBe(false);
+    expect(first(ledger.riskLocks).clearedAt).toBeDefined();
+    expect(first(ledger.loopPositions).status).toBe('active');
+    expect(first(ledger.loopPositions).unwindStatus).toBeUndefined();
+  });
 });
 
 function loopConfig(ledgerPath: string): AppConfig {
@@ -264,6 +510,7 @@ function loopConfig(ledgerPath: string): AppConfig {
     navi: { enabled: true, write: true },
     scallop: { enabled: true, write: true }
   };
+  config.sui.maxBorrowRaw = 25_000_000_000n;
   config.loopStrategy = {
     ...config.loopStrategy,
     ledgerPath,
@@ -551,6 +798,26 @@ function tickOptions(config: AppConfig, ledgerStore: StrategyLedgerStore, client
     clients,
     logger: quietLogger(),
     ledgerStore
+  };
+}
+
+function walletBalances({ usdcRaw = '0', suiRaw = '0' }: { usdcRaw?: string; suiRaw?: string }) {
+  return {
+    wallet: '0x1',
+    sui: {
+      symbol: 'SUI',
+      coinType: 'sui-coin',
+      decimals: 9,
+      raw: suiRaw,
+      formatted: String(Number(suiRaw) / 1_000_000_000)
+    },
+    usdc: {
+      symbol: 'USDC',
+      coinType: 'usdc-coin',
+      decimals: 6,
+      raw: usdcRaw,
+      formatted: String(Number(usdcRaw) / 1_000_000)
+    }
   };
 }
 

@@ -293,6 +293,13 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
         return { ok: false, blocked: true, reason: 'LOOP_STRATEGY_ENABLED is false' };
       }
 
+      let walletBalances = null;
+      try {
+        walletBalances = await clients.suiExecution.getCoinBalances(config.agent.walletAddress);
+      } catch {
+        walletBalances = null;
+      }
+
       let proposalId: string | null = null;
       let rejectionReason: string | null = null;
       await strategyLedgerStore.update((ledger) => {
@@ -301,7 +308,8 @@ export function createToolRegistry({ config, clients, logger, memory }: ToolRegi
           runId: `main-agent-${memory.runId}`,
           market: ledger.marketSnapshots[0] ?? null,
           positions: ledger.positionSnapshots[0] ?? null,
-          existingProposalCount: ledger.strategyProposals.length
+          existingProposalCount: ledger.strategyProposals.length,
+          walletBalances
         });
         if (!proposal) {
           rejectionReason = 'No fresh market/position snapshots or no eligible collateral/target';

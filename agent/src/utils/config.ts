@@ -118,6 +118,7 @@ export function loadConfig(): AppConfig {
       collateralAsset: readString('LOOP_COLLATERAL_ASSET', 'usdc').toLowerCase(),
       borrowAsset: readString('LOOP_BORROW_ASSET', 'sui').toLowerCase(),
       maxDepth: readNumber('LOOP_MAX_DEPTH', 1),
+      maxConcurrentLoops: readNumber('LOOP_MAX_CONCURRENT_LOOPS', 1),
       minHealthFactor: readNumber('LOOP_MIN_HEALTH_FACTOR', 1.75),
       criticalHealthFactor: readNumber('LOOP_CRITICAL_HEALTH_FACTOR', 1.45),
       maxBorrowUsd: readNumber('LOOP_MAX_BORROW_USD', 25),

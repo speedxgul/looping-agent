@@ -104,6 +104,7 @@ export interface AppConfig {
     collateralAsset: string;
     borrowAsset: string;
     maxDepth: number;
+    maxConcurrentLoops: number;
     minHealthFactor: number;
     criticalHealthFactor: number;
     maxBorrowUsd: number;
