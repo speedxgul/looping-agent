@@ -111,11 +111,15 @@ bun src/index.ts run-daemon                                  # agent: enclave /d
 # manual single-protocol supply (dry-run unless SUBMIT=1):
 source ../deployments/mainnet-v2.env && ENCLAVE=$ENCLAVE_OBJECT PROTOCOL=scallop bun scripts/mainnet-supply.ts
 
-# owner withdraws (dry-run unless --submit); scallop/mock = whole position, navi/suilend = --amount:
+# owner withdraws deployed treasury positions (dry-run unless --submit); scallop/mock = whole position, navi/suilend = --amount:
 OWNER_SUI_PRIVATE_KEY=suiprivkey1… bun run treasury withdraw --submit
 OWNER_SUI_PRIVATE_KEY=suiprivkey1… bun run treasury withdraw --protocol navi --amount 4 --submit
+# owner recovers idle (un-deployed) principal from the vault (wraps capability::withdraw_principal):
+OWNER_SUI_PRIVATE_KEY=suiprivkey1… bun run treasury withdraw-idle --submit
+# agent recovers a Flow-2 WALLET position (TREASURY_MODE=false; agent-signed, not owner):
+bun run treasury wallet-withdraw --protocol navi --amount 3 --submit
 ```
-Idle (un-deployed) principal: `capability::withdraw_principal(treasury, owner, amount)`.
+All four recovery paths live in the `treasury` CLI; each dry-runs unless `--submit`.
 
 ### Two-key model
 The **agent** key (`AGENT_SUI_PRIVATE_KEY` in `agent/.env`) is low-privilege: the daemon signs

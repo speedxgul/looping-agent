@@ -9,7 +9,7 @@ The v1 verifiable-execution stack is **built, tested, and demonstrated live on S
 with real AWS Nitro attestation** (~48 tests across Move + agent + enclave). Full design:
 [`docs/treasury-agent-design.md`](docs/treasury-agent-design.md); phased build log:
 [`docs/superpowers/plans/2026-06-20-implementation-roadmap.md`](docs/superpowers/plans/2026-06-20-implementation-roadmap.md);
-attestation runbook: [`docs/runbooks/deploy.md`](docs/runbooks/deploy.md).
+attestation runbook: [`docs/deploy-runbook.md`](docs/deploy-runbook.md).
 
 - **On-chain** (`move/`): non-custodial `Treasury<T>` (typed, revocable caps), the
   signature-gated `verified_supply` / `verified_supply_entry`, receipt custody, the
@@ -75,7 +75,7 @@ for full agent docs and [`move/README.md`](move/README.md) for the on-chain pack
 The enclave's key is generated inside a real AWS Nitro enclave on Marlin Oyster and bound
 on-chain — no dev key. The full deploy → attest → register process (build+push the image,
 `oyster-cvm deploy`, decode the `:1301` attestation, `register_enclave`) is in
-[`docs/runbooks/deploy.md`](docs/runbooks/deploy.md). With a registered
+[`docs/deploy-runbook.md`](docs/deploy-runbook.md). With a registered
 enclave and the object ids recorded in `deployments/testnet.env`:
 
 ```bash

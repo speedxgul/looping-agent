@@ -16,7 +16,7 @@
 > `treasury_core` + per-protocol adapters); the receipt-custody upgrade (`verified_supply`)
 > that closes the custody gap is **done** — proven live across Suilend, NAVI (via
 > `AccountCap`), and Scallop through the autonomous agent. See `move/README.md` and
-> `runbooks/deploy.md`. This document covers the full non-custodial, TEE-attested
+> `deploy-runbook.md`. This document covers the full non-custodial, TEE-attested
 > design; the one remaining roadmap item is the on-chain bounds `verifier`.
 
 ## Contents
@@ -329,24 +329,31 @@ sequenceDiagram
     participant Plan as Planner (LLM, host)
     participant Enc as Enclave (strategy + signer)
     participant Sub as Submitter (host)
-    participant Dec as decision.move
-    participant Cap as capability.move
-    participant Pool as Suilend / Scallop
+    participant Adp as &lt;protocol&gt;_adapter
+    participant Dec as core::decision
+    participant Cap as core::capability (Treasury)
+    participant Pool as Suilend / Scallop / NAVI
 
     loop every cycle
         Plan-->>Enc: market summary + suggestion (advisory)
         Enc->>Enc: authenticate inputs · run optimizer · check bounds · build ActionIntent
-        Enc->>Enc: sign ActionIntent (key stays in TEE)
+        Enc->>Enc: sign ActionIntent (secp256k1 key stays in TEE)
         Enc-->>Sub: signed ActionIntent
-        Sub->>Dec: PTB → verified_supply(intent, sig, AgentCap)
-        Dec->>Dec: verify enclave sig vs registered pk · check nonce
-        Dec->>Cap: bounds check (per-tx · period · expiry · allow-list · not revoked)
-        alt within bounds
-            Cap->>Pool: deposit
-            Pool-->>Cap: receipt (ObligationOwnerCap / sCoin)
-            Cap->>Cap: CUSTODY receipt in Treasury · emit ActionExecuted
+        Sub->>Adp: PTB → verified_supply_&lt;protocol&gt;_entry(intent, sig, AgentCap)
+        Adp->>Dec: verified_release&lt;C, W&gt;(witness, registry, treasury, enclave, cap, …intent)
+        Dec->>Dec: verify enclave sig vs registered pk · consume nonce (replay)
+        Dec->>Dec: witness W == adapter registered for protocol_id (on-chain allow-list)
+        Dec->>Cap: bounds check (per-tx · period · expiry · not revoked)
+        alt all checks pass
+            Cap-->>Dec: Coin&lt;C&gt; + ReleaseTicket (hot-potato, no abilities)
+            Dec-->>Adp: Coin&lt;C&gt; + ReleaseTicket
+            Note over Adp,Cap: ReleaseTicket has no abilities — the ONLY<br/>way to consume it is to custody a receipt
+            Adp->>Pool: supply Coin&lt;C&gt;
+            Pool-->>Adp: receipt (sCoin / AccountCap / ObligationOwnerCap)
+            Adp->>Cap: discharge ticket — custody_new / borrow_for_ticket + discharge_existing
+            Cap->>Cap: CUSTODY receipt as dynamic field of Treasury · emit ActionExecuted
             Cap-->>Sub: receipt event (→ Walrus / X)
-        else any check fails
+        else any check fails (sig · witness · nonce · bounds)
             Cap-->>Sub: ABORT — funds untouched
         end
     end
@@ -505,7 +512,7 @@ excluded (address-bound).
 > in-TEE key after on-chain cert-chain + PCR verification, and the enclave both *signs* and
 > *decides* (optimizer in the TEE) actions the chain verifies. M4 (`seal_approve`) is
 > scaffolded + tested; live Seal provisioning and the real Suilend adapter remain. Deploy +
-> attestation runbook: [`runbooks/deploy.md`](runbooks/deploy.md).
+> attestation runbook: [`deploy-runbook.md`](deploy-runbook.md).
 
 ## 15. Lanes
 

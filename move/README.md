@@ -23,7 +23,7 @@ packages/
   navi_adapter/     deps core + real NAVI     (github naviprotocol/navi-smart-contracts)
   suilend_adapter/  deps core + real Suilend  (github suilend/suilend)
   mock_adapter/     deps core only — testnet/demo placeholder
-(deploy guide: ../docs/runbooks/deploy.md)
+(deploy guide: ../docs/deploy-runbook.md)
 ```
 
 ## How a verified supply flows (non-custodial across package boundaries)
@@ -58,6 +58,6 @@ cd packages/scallop_adapter && sui move build      # fetches the real protocol g
 
 `mainnet`/`testnet` are CLI system environments, so no `[environments]` block is needed to
 publish there; `Published.toml` (written on publish) records each package's on-chain address
-and dependents link to it automatically. See **../docs/runbooks/deploy.md** for the full publish order
+and dependents link to it automatically. See **../docs/deploy-runbook.md** for the full publish order
 (enclave → core → adapters → `register_adapter` → create Treasury) and the live mainnet ids
 (also in `../deployments/mainnet-v2.env`).
