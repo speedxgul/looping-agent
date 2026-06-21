@@ -143,6 +143,17 @@ export interface TreasuryClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+/** The full attested response from the enclave's /decide. */
+export interface DecideResult {
+  legs: AllocationLeg[];
+  /** The TEE's secp256k1 public key (matches the on-chain `Enclave<DECISION>.pk`). */
+  publicKey: string;
+  scheme: string;
+  /** The water-filling allocation the enclave computed (per-protocol split + blended APR). */
+  // biome-ignore lint/suspicious/noExplicitAny: enclave allocation passthrough
+  allocation: any;
+}
+
 /** Market data + intent context the enclave needs to decide an allocation. */
 export interface DecideRequest {
   // biome-ignore lint/suspicious/noExplicitAny: protocol reserve curves passed through to the enclave
@@ -198,8 +209,13 @@ export class TreasuryClient {
     return out;
   }
 
-  /** Ask the enclave to DECIDE the allocation; returns one signed leg per funded protocol. */
-  async decide(req: DecideRequest): Promise<AllocationLeg[]> {
+  /**
+   * Ask the enclave to DECIDE the allocation. Returns the full attested response: one signed
+   * leg per funded protocol PLUS the TEE's public key (verify it matches the on-chain
+   * `Enclave<DECISION>.pk`) and the water-filling allocation it computed. Use `decideLegs` if
+   * you only need the legs.
+   */
+  async decide(req: DecideRequest): Promise<DecideResult> {
     const body = {
       curves: req.curves,
       depositRaw: req.depositRaw.toString(),
@@ -219,9 +235,22 @@ export class TreasuryClient {
     });
     if (!res.ok) throw new Error(`enclave /decide failed: HTTP ${res.status}`);
     const json = (await res.json()) as {
+      public_key?: string;
+      scheme?: string;
       legs: Array<{ intent: Record<string, unknown>; signature: string }>;
+      allocation?: unknown;
     };
-    return json.legs.map((l) => ({ intent: parseSignedLeg(l.intent), signatureHex: l.signature }));
+    return {
+      legs: json.legs.map((l) => ({ intent: parseSignedLeg(l.intent), signatureHex: l.signature })),
+      publicKey: json.public_key ?? '',
+      scheme: json.scheme ?? '',
+      allocation: json.allocation
+    };
+  }
+
+  /** Convenience: just the signed legs (drops the public key + allocation). */
+  async decideLegs(req: DecideRequest): Promise<AllocationLeg[]> {
+    return (await this.decide(req)).legs;
   }
 
   /**

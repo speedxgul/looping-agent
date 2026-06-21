@@ -149,7 +149,7 @@ export function treasuryToolHandlers({
       if (curves.length === 0)
         return { ok: false, submitted: false, reason: 'no reserve curves available to allocate across' };
 
-      const legs = await treasury.decide({
+      const decided = await treasury.decide({
         curves,
         depositRaw: budget.deployableRaw,
         perTxCapRaw: budget.state.perTxCapRaw,
@@ -159,12 +159,22 @@ export function treasuryToolHandlers({
         chainId: [4],
         timestampMs: TS
       });
+      const legs = decided.legs;
+
+      // What the TEE actually returned — surfaced so the run report can show the attested decision
+      // (the signing pubkey + the water-filling allocation the enclave computed and signed).
+      const enclave = {
+        publicKey: decided.publicKey,
+        scheme: decided.scheme,
+        allocation: decided.allocation
+      };
 
       const decision = legs.map((l) => ({
         protocol: TC.protocolName(l.intent.protocolId),
         protocolId: l.intent.protocolId,
         amountRaw: l.intent.amount.toString(),
-        nonce: l.intent.nonce.toString()
+        nonce: l.intent.nonce.toString(),
+        signature: l.signatureHex
       }));
 
       // Submit only legs whose protocol has configured refs; the rest are decided but
@@ -178,6 +188,7 @@ export function treasuryToolHandlers({
           ok: true,
           submitted: false,
           decision,
+          enclave,
           note: 'The enclave decided this allocation, but no leg has configured refs to submit. Add the chosen protocol(s) shared-object ids to config (TREASURY_<PROTOCOL>_* env) to execute real legs.'
         };
       }
@@ -203,10 +214,10 @@ export function treasuryToolHandlers({
           legs: executable.length,
           oracleRefresh: prelude ? 'suilend-reserve' : 'none'
         });
-        return { ok: true, submitted: true, digest: result.digest, decision, skipped };
+        return { ok: true, submitted: true, digest: result.digest, decision, skipped, enclave };
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
-        return { ok: false, submitted: false, decision, error: message.slice(0, 200) };
+        return { ok: false, submitted: false, decision, enclave, error: message.slice(0, 200) };
       }
     }
   };

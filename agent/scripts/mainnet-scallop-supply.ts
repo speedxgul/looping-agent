@@ -69,7 +69,7 @@ async function main() {
   };
 
   const TS = BigInt(Date.now());
-  const legs = await treasury.decide({
+  const decided = await treasury.decide({
     curves: [curve],
     depositRaw: budget.deployableRaw,
     perTxCapRaw: budget.state.perTxCapRaw,
@@ -79,10 +79,50 @@ async function main() {
     chainId: [4],
     timestampMs: TS
   });
+  const legs = decided.legs;
+
+  // === What the TEE sent back (the attested decision) ===
+  console.log('\n──────────── enclave /decide response (signed in the TEE) ────────────');
+  console.log('  TEE public key :', `0x${decided.publicKey.replace(/^0x/, '')}`, `(${decided.scheme})`);
+  // Prove it's the SAME key we registered on-chain (the attested Enclave<DECISION>.pk).
+  const onChain = await client.getObject({ id: ENCLAVE, options: { showContent: true } });
+  // biome-ignore lint/suspicious/noExplicitAny: dynamic move content
+  const onChainPk: number[] = (onChain.data?.content as any)?.fields?.pk ?? [];
+  const onChainHex = onChainPk.map((b) => b.toString(16).padStart(2, '0')).join('');
+  const decidedHex = decided.publicKey.replace(/^0x/, '');
+  console.log('  on-chain Enclave.pk:', `0x${onChainHex.slice(0, 66)}…`);
   console.log(
-    'enclave signed legs:',
-    legs.map((l) => ({ protocolId: l.intent.protocolId, amount: l.intent.amount.toString(), nonce: l.intent.nonce.toString() }))
+    '  key match         :',
+    onChainHex.includes(decidedHex) || decidedHex.includes(onChainHex.slice(0, decidedHex.length))
+      ? '✓ /decide key IS the on-chain attested enclave key'
+      : '⚠ differs (check registration)'
   );
+  if (decided.allocation) {
+    const a = decided.allocation;
+    console.log(
+      '  allocation        : blended',
+      a.blendedNetApr,
+      '| marginal',
+      a.marginalApr,
+      '| iters',
+      a.iterations
+    );
+    for (const al of a.allocations ?? [])
+      console.log(
+        `     → ${al.protocol} ${al.asset}: ${al.xRaw} raw (share ${al.share}, netApr ${al.netSupplyApr})`
+      );
+  }
+  console.log('  signed legs       :');
+  for (const l of legs) {
+    const i = l.intent;
+    console.log(
+      `     • protocol ${i.protocolId} amount ${i.amount} nonce ${i.nonce} expires ${i.expiresAtMs}`
+    );
+    console.log(`       signature  : 0x${l.signatureHex}`);
+    console.log(`       inputHash  : 0x${i.inputHash.map((b) => b.toString(16).padStart(2, '0')).join('')}`);
+  }
+  console.log('──────────────────────────────────────────────────────────────────────\n');
+
   const scallopLegs = legs.filter((l) => l.intent.protocolId === 1);
   if (scallopLegs.length === 0) throw new Error('enclave did not return a Scallop leg');
 
@@ -106,10 +146,17 @@ async function main() {
       ? Ed25519Keypair.fromSecretKey(pk)
       : Ed25519Keypair.fromSecretKey(fromHex(pk.replace(/^0x/, '')));
     if (signer.getPublicKey().toSuiAddress() !== AGENT_ADDR)
-      throw new Error(`AGENT_SUI_PRIVATE_KEY derives ${signer.getPublicKey().toSuiAddress()}, not AGENT_ADDR ${AGENT_ADDR}`);
-    const r = await client.signAndExecuteTransaction({ signer, transaction: tx, options: { showEffects: true, showBalanceChanges: true } });
+      throw new Error(
+        `AGENT_SUI_PRIVATE_KEY derives ${signer.getPublicKey().toSuiAddress()}, not AGENT_ADDR ${AGENT_ADDR}`
+      );
+    const r = await client.signAndExecuteTransaction({
+      signer,
+      transaction: tx,
+      options: { showEffects: true, showBalanceChanges: true }
+    });
     console.log('\nSUPPLY ->', r.effects?.status, '| tx:', r.digest);
-    for (const b of r.balanceChanges ?? []) console.log('  ', b.coinType.split('::').pop(), b.amount, '->', b.owner);
+    for (const b of r.balanceChanges ?? [])
+      console.log('  ', b.coinType.split('::').pop(), b.amount, '->', b.owner);
   } else {
     const built = await tx.build({ client });
     const res = await client.dryRunTransactionBlock({ transactionBlock: built });
