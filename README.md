@@ -1,46 +1,132 @@
 # HexLiquid Yield
 
-A non-custodial multi-agent that deploys idle stablecoins under on-chain risk bounds you can cryptographically verify. 
-The LLM plans(One Main Agent + 6 Independent SubAgents), a decision layer runs strategies inside TEE and explains; a deterministic layer moves funds. Shared Walrus State and Memories 
+A non-custodial multi-agent that deploys idle stablecoins under on-chain risk bounds you can
+cryptographically verify. The LLM plans (one main agent + six independent subagents), a
+decision layer runs strategies **inside a TEE** and explains; a deterministic layer moves
+funds. Shared Walrus state and memory.
 
-## Status
+## Highlights
 
-The v2 verifiable-execution stack is **built, tested, and demonstrated live on Sui MainNet
-with real AWS Nitro attestation** (~48 tests across Move + agent + enclave). Full design:
-[`docs/treasury-agent-design.md`](docs/treasury-agent-design.md); phased build log:
-[`docs/superpowers/plans/2026-06-20-implementation-roadmap.md`](docs/superpowers/plans/2026-06-20-implementation-roadmap.md);
-attestation runbook: [`docs/deploy-runbook.md`](docs/deploy-runbook.md).
+- **Non-custodial by construction.** Funds live in an on-chain `Treasury<T>`; the agent holds
+  only a capped, revocable `AgentCap` and can never withdraw. A **split architecture** —
+  protocol-free `treasury_core` + one adapter package per protocol — keeps each protocol's
+  dependencies isolated, and `verified_release` hands out a bounded `Coin` **plus a
+  `ReleaseTicket` hot-potato** that can only be discharged by custodying the protocol receipt
+  inside the vault. Funds can't escape, even across package boundaries.
+- **The *decision* is attested, not just the signature.** A Nitro-based enclave on **Marlin
+  Oyster** runs the optimizer and signs the allocation with a key generated **inside the TEE**;
+  `register_enclave` binds that pubkey on-chain after verifying the attestation (PCR0/1/2/16).
+  The agent sends only market data — it can't puppet the venue or amount.
+- **Verified on-chain before any funds move.** Enclave signature → adapter allow-list →
+  nonce/replay → caps → receipt custody; over-cap aborts, a **tampered intent is rejected**,
+  only the owner withdraws. The `ActionIntent` BCS is byte-identical across `@mysten/sui` ≡
+  Move ≡ enclave ≡ agent.
+- **Live on Sui mainnet** across Suilend, NAVI (via `AccountCap`), and Scallop —
+  `treasury_core` [`0x2e069f6b…`](https://suivision.xyz/package/0x2e069f6be4e68b6a533676122754ba9611898a431c1b0240dc4e0cc8d1cde3a4),
+  attested [`Enclave<DECISION>` `0x1ee14a68…`](https://suivision.xyz/object/0x1ee14a68089b59872e66f77d5259e007d5b2a1c92ed93313f7dd99add848d108),
+  per-protocol adapters. All ids in [`deployments/mainnet-v2.env`](deployments/mainnet-v2.env).
 
-- **On-chain** (`move/`): non-custodial `Treasury<T>` (typed, revocable caps), the
-  signature-gated `verified_supply` / `verified_supply_entry`, receipt custody, the
-  `decision.move` enclave verifier + nonce/replay, and the `seal_approve` policy.
-- **Enclave** (`enclave/app/`): the deterministic optimizer + `decide()` → a signed
-  `ActionIntent` (the *decision* is attested), `@noble`-only for a small PCR.
-- **Agent** (`agent/`): canonical `ActionIntent` codec + the `verified_supply` PTB
-  builder — byte-identical BCS across `@mysten/sui` ≡ Move ≡ enclave ≡ agent.
-- **Attested on real hardware:** a Nitro enclave on Marlin Oyster generates a secp256k1
-  key **inside the TEE**; `register_enclave` binds its pubkey on-chain after verifying the
-  cert chain to the **AWS Nitro root** + the enclave PCRs — no dev key, no trust in the operator.
-- **Proven live on testnet:** enclave-signed action → on-chain signature verify → caps →
-  receipt custody; over-cap aborts; a **tampered intent is rejected**; only the owner withdraws.
-- **The decision itself is attested:** the agent sends only market data — the enclave runs
-  the optimizer in the TEE, picks venue + amount, and signs. The agent cannot puppet it
-  ([decide tx](https://suiscan.xyz/testnet/tx/CaF2Ng8DsZuxXzZsLFX1HGZY7RmrhbvQ5ssJXZvoUANH)).
-- **On Sui testnet:** package [`0x79517b…b4396c`](https://suiscan.xyz/testnet/object/0x79517b947e204f8ba6377e9e1ddc26de49145d1f55643875b79e4297b1b4396c),
-  attested [`Enclave<DECISION>` `0x425a87be…`](https://suiscan.xyz/testnet/object/0x425a87be07be7a8d9a4efdc58c9a72e0052b528bfabefbcb97754d166c61cef3).
+Full design: [`docs/treasury-agent-design.md`](docs/treasury-agent-design.md) · deploy +
+attestation runbook: [`docs/deploy-runbook.md`](docs/deploy-runbook.md). ~130 tests across
+Move + agent + enclave; live **Seal** is scaffolded (policy + wiring in place, key-load stubbed).
 
-**Pending external infra (not core logic):** the real Suilend adapter (upstream Move.toml
-dep conflict) and live Seal (needs key servers). The localnet-only
-`enclave::register_enclave_dev` should be deleted before mainnet now that real attestation works.
+## How the attested flow works
+
+**One-time: enclave attestation & registration.** The signing key is born inside the TEE and
+bound on-chain, so only this exact code's signatures will ever verify.
+
+```mermaid
+sequenceDiagram
+    participant Owner
+    participant Oyster as Marlin Oyster (TEE)
+    participant Enc as Enclave
+    participant Chain as Sui · enclave.move
+
+    Owner->>Oyster: deploy pinned enclave image
+    Enc->>Enc: generate secp256k1 key INSIDE the TEE
+    Enc->>Oyster: attestation (PCR0/1/2/16 + public key)
+    Owner->>Chain: create_enclave_config(PCRs)
+    Owner->>Chain: register_enclave(attestation doc)
+    Chain->>Chain: verify PCRs · bind the enclave pubkey on-chain
+    Note over Chain: change one byte of code → PCRs change → signatures stop verifying
+```
+
+**Runtime: the treasury-mode supply flow.** Funds live in the vault; the agent only relays an
+enclave-signed allocation the contract verifies before releasing and custodying.
+
+```mermaid
+sequenceDiagram
+    participant Owner
+    participant Vault as Treasury (vault)
+    participant Agent as Agent (host · gas only)
+    participant Enc as Enclave (TEE)
+    participant Adp as protocol adapter
+    participant Dec as core::decision
+    participant Pool as Suilend / NAVI / Scallop
+
+    Owner->>Vault: deposit USDC (keep OwnerCap)
+    Agent->>Enc: market rates (advisory only)
+    Enc->>Enc: optimize · build ActionIntent · sign (key stays in TEE)
+    Enc-->>Agent: signed ActionIntent
+    Agent->>Adp: verified_supply_*_entry(intent, sig, AgentCap)
+    Adp->>Dec: verified_release(witness, …intent)
+    Dec->>Dec: verify enclave sig · adapter allow-list · nonce · caps
+    alt all checks pass
+        Dec-->>Adp: Coin + ReleaseTicket (hot-potato)
+        Adp->>Pool: supply Coin
+        Pool-->>Adp: receipt (sCoin / AccountCap / ObligationOwnerCap)
+        Adp->>Vault: custody receipt (discharge ticket)
+        Note over Vault: only OwnerCap can withdraw — the agent never can
+    else any check fails
+        Dec-->>Agent: ABORT — funds untouched in the vault
+    end
+    Owner->>Vault: withdraw (owner-only)
+```
+
+Deeper diagrams (Seal key-load, the full module map) are in
+[`docs/treasury-agent-design.md`](docs/treasury-agent-design.md).
 
 ## Layout
 
 | Folder | What it is |
 |---|---|
-| [`agent/`](agent/) | Off-chain TypeScript agent (the "brain"): an LLM tool-calling loop **and** a six-subagent yield-looping pipeline, the own-impact-aware optimizer, policy, health guard, Suilend/NAVI/Scallop read+write clients, Walrus/MemWal memory. Self-contained Bun package. |
-| [`move/`](move/) | On-chain Sui Move package (the choke-point). Built + tested: scoped revocable capability (`capability.move`), enclave-signature verifier (`decision.move`), PCR-pinned attestation (`enclave.move`). Roadmap: receipt-custody `verified_supply` and on-chain bounds `verifier`. |
-| [`enclave/`](enclave/) | TEE app (AWS Nitro / Marlin Oyster) for the attested strategy + signer — roadmap M3–M4. |
-| [`docs/`](docs/) | [`architecture.md`](docs/architecture.md) (what's built), [`strategies.md`](docs/strategies.md) (strategies + math), [`subagent-pipeline.md`](docs/subagent-pipeline.md) (the loop pipeline), [`autonomy.md`](docs/autonomy.md), [`treasury-agent-design.md`](docs/treasury-agent-design.md) (TEE-verified custody design), [`deployment.md`](docs/deployment.md). |
+| [`agent/`](agent/) | Off-chain TypeScript agent (the "brain"): an LLM tool-calling loop **and** a six-subagent yield-looping pipeline, the own-impact-aware optimizer, policy, health guard, Suilend/NAVI/Scallop read+write clients, the attested `treasury` CLI, Walrus/MemWal memory. Self-contained Bun package. |
+| [`move/`](move/) | On-chain Sui Move packages (the choke-point). Built, tested, **deployed on mainnet**: protocol-free `treasury_core` (scoped revocable `capability.move`, enclave-signature verifier `decision.move`, `verified_release` + `ReleaseTicket` custody, `seal_policy.move`) plus per-protocol adapter packages. |
+| [`enclave/`](enclave/) | TEE app (Marlin Oyster / AWS Nitro) for the attested strategy + signer — built and deployed. |
+| [`app/`](app/) | The **Trust Console** — a read-only Next.js dashboard (`@mysten/dapp-kit`) that surfaces the agent's state (subagent heartbeats, rates, positions, plans, receipts, memory) and renders the docs. |
+| [`docs/`](docs/) | [`architecture.md`](docs/architecture.md) (what's built), [`strategies.md`](docs/strategies.md) (strategies + math), [`subagent-pipeline.md`](docs/subagent-pipeline.md) (the loop pipeline), [`autonomy.md`](docs/autonomy.md), [`treasury-agent-design.md`](docs/treasury-agent-design.md) (TEE-verified custody design), [`deploy-runbook.md`](docs/deploy-runbook.md) (mainnet deploy), [`deployment.md`](docs/deployment.md) (agent config). |
+
+## Tech stack
+
+**Sui**
+- **Sui Move 2024** + the Sui framework — the on-chain `treasury_core` + per-protocol adapter packages
+- [`@mysten/sui`](https://www.npmjs.com/package/@mysten/sui) — Sui TS SDK: PTB construction, BCS codec, signing (agent · enclave · frontend)
+- [`@mysten/dapp-kit`](https://www.npmjs.com/package/@mysten/dapp-kit) — wallet connection + React hooks (Trust Console)
+- **`0x2::nitro_attestation`** — Sui's native Nitro-attestation verifier, used by `register_enclave`
+- **Sui CLI** — package publish + PTBs for deploy/registration
+
+**TEE & attestation**
+- **Nautilus** — Sui's framework for verifiable TEE compute; our `enclave.move` (the `Enclave` object · PCR-pinned `EnclaveConfig` · `register_enclave` over a Nitro attestation doc) follows the Nautilus pattern
+- **Marlin Oyster** — confidential compute (AWS Nitro enclaves) hosting the optimizer + signer
+- [`@noble/curves`](https://www.npmjs.com/package/@noble/curves) + [`@noble/hashes`](https://www.npmjs.com/package/@noble/hashes) — secp256k1 sign + hash **inside** the enclave (tiny dep surface → small, reproducible PCR)
+- [`@mysten/seal`](https://www.npmjs.com/package/@mysten/seal) — Seal threshold encryption for the sealed key (scaffolded)
+
+**DeFi protocols** (on-chain Move adapters + off-chain SDKs)
+- **Suilend** — [`@suilend/sdk`](https://www.npmjs.com/package/@suilend/sdk) + `suilend/suilend` Move
+- **NAVI** — [`@naviprotocol/lending`](https://www.npmjs.com/package/@naviprotocol/lending) (non-custodial via `AccountCap`)
+- **Scallop** — [`@scallop-io/sui-scallop-sdk`](https://www.npmjs.com/package/@scallop-io/sui-scallop-sdk) + `scallop-io/sui-lending-protocol` Move
+- **Pyth** — price feeds (oracle refresh for value-computing supply/withdraw)
+
+**Storage & memory**
+- **Walrus** — verifiable blob storage for agent state + run reports
+- [`@mysten-incubation/memwal`](https://www.npmjs.com/package/@mysten-incubation/memwal) — Walrus-backed semantic memory
+
+**Agent & tooling**
+- **OpenAI** (gpt-5.x) / **Anthropic** (Claude) — dual LLM backend for the planning agent
+- **Bun** (runtime · package manager · test runner) · **TypeScript** · **Biome** (lint/format)
+
+**Frontend — the Trust Console** (`app/`)
+- **Next.js** · **React** · **Tailwind CSS** · **@tanstack/react-query** · **react-markdown** + **remark-gfm** · **mermaid**
 
 ## Quick start
 
@@ -48,14 +134,14 @@ Run from the repo root — these delegate into `agent/` and `move/`:
 
 ```bash
 bun run setup                        # install agent deps
-cp agent/.env.example agent/.env     # set OPENAI_API_KEY and AGENT_SUI_PRIVATE_KEY
+cp agent/.env.example agent/.env     # set the LLM key + AGENT_SUI_PRIVATE_KEY
 bun run doctor                       # config + key + RPC checks
 bun run dev                          # one autonomous main-agent loop (run-once)
 
 cd agent && bun run run:supervisor   # main agent + six-subagent loop pipeline
 
 bun run typecheck && bun run check && bun run test   # agent gates
-bun run move:build && bun run move:test              # on-chain package
+bun run move:build && bun run move:test              # on-chain packages
 ```
 
 **Two decision engines, one enforcement layer.** A flexible LLM tool-calling agent and
@@ -66,73 +152,31 @@ yield loops** with no LLM in the fund-moving path. See
 [`docs/subagent-pipeline.md`](docs/subagent-pipeline.md).
 
 (Use `bun run <script>` from root, not bare `bun test`.) See [`agent/README.md`](agent/README.md)
-for full agent docs and [`move/README.md`](move/README.md) for the on-chain package.
+for full agent docs and [`move/README.md`](move/README.md) for the on-chain packages.
 
-## Reproduce the live attested demo
+## The live attested treasury flow (Sui mainnet)
 
-### On Sui testnet (real Nitro attestation)
-
-The enclave's key is generated inside a real AWS Nitro enclave on Marlin Oyster and bound
-on-chain — no dev key. The full deploy → attest → register process (build+push the image,
-`oyster-cvm deploy`, decode the `:1301` attestation, `register_enclave`) is in
-[`docs/deploy-runbook.md`](docs/deploy-runbook.md). With a registered
-enclave and the object ids recorded in `deployments/testnet.env`:
+Funds live in an on-chain `Treasury`; the agent can only relay an enclave-signed allocation
+that the contract verifies before releasing and custodying. The `treasury` CLI drives it
+(reads `deployments/mainnet-v2.env`; every write dry-runs unless `--submit`):
 
 ```bash
-source deployments/testnet.env && cd agent
-# Single endpoint: the enclave runs the optimizer in the TEE, picks the protocol + amount,
-# and signs that ActionIntent. The agent only relays it; the chain verifies; a tampered
-# intent (same signature, bumped amount) is rejected.
-bun scripts/live-attested-decide.ts
+cd agent
+bun run treasury attest                                  # TEE identity: signing key + on-chain PCRs
+bun run treasury create --fund 20 --cap 500 --submit     # mint + fund a vault (caps enforced on-chain)
+bun run treasury sync-env                                # point the agent at the new vault
+bun run treasury status                                  # idle balance · caps · custodied positions
+
+bun src/index.ts run-daemon                              # agent: enclave /decide → attested verified_supply → custody
+
+bun run treasury withdraw --protocol navi --amount 20 --submit   # owner-only; the agent can never withdraw
 ```
 
-### On localnet (no hardware)
+The full deploy → attest → register process (publish packages, `oyster-cvm deploy`, decode
+the `:1301` attestation, `register_enclave`, register the adapter allow-list) is in
+[`docs/deploy-runbook.md`](docs/deploy-runbook.md), along with a no-hardware **localnet
+smoke-test** for the package linkage.
 
-End-to-end on a throwaway local network: the enclave-signed action is verified on-chain,
-bounds are enforced, the receipt is custodied, and a tampered intent is rejected.
-
-> **Localnet only.** This uses `enclave::register_enclave_dev` (registers an enclave key
-> with **no attestation / no PCR binding**) — it must be removed before testnet/mainnet,
-> where a real Nitro attestation registers the key instead (see the testnet path above).
-
-```bash
-# 1. Start a localnet with a faucet (leave running in its own terminal)
-RUST_LOG="off,sui_node=info" sui start --with-faucet --force-regenesis
-
-# 2. Point the client at it and fund your address
-sui client new-env --alias localnet --rpc http://127.0.0.1:9000
-sui client switch --env localnet
-sui client faucet --url http://127.0.0.1:9123/gas
-
-# 3. Publish (ephemeral; records ids in Pub.localnet.toml)
-cd move && sui client test-publish --build-env localnet --gas-budget 300000000
-#   -> note the published PACKAGE id and the created decision::DecisionRegistry id
-
-# 4. Register the dev "enclave" with the canonical demo key (LOCALNET ONLY)
-sui client call --package <PKG> --module enclave --function register_enclave_dev \
-  --type-args <PKG>::decision::DECISION \
-  --args 0x034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa \
-  --gas-budget 100000000        #   -> note the created enclave::Enclave id
-
-# 5. Create a funded vault (delegate the AgentCap to your own address for the demo)
-sui client call --package <PKG> --module capability --function create --type-args 0x2::sui::SUI \
-  --args <A_COIN_ID> 100000000000 150000000000 86400000 9999999999999 <YOUR_ADDRESS> 0x6 \
-  --gas <ANOTHER_COIN_ID> --gas-budget 100000000   #   -> note Treasury + AgentCap ids
-
-# 6. Sign an ActionIntent (agent code) and submit verified_supply_entry, then a tamper test
-cd ../agent
-PKG=<PKG> REGISTRY=<REGISTRY> ENCLAVE=<ENCLAVE> TREASURY=<TREASURY> \
-AGENTCAP=<AGENTCAP> ADDR=<YOUR_ADDRESS> \
-  bun scripts/live-verified-supply.ts
-```
-
-Expected: `[1]` a `FundsReleased` event and the treasury balance drops (funds → custodied
-`MockPosition` held *by the Treasury*); `[2]` the tampered intent (same signature, changed
-amount) is **rejected on-chain** (signature verification fails). Stop the localnet with
-`pkill -f "sui start"` and restore your env with `sui client switch --env testnet`.
-
-## Future layout
-
-`web/` (trust-console UI) and `shared/` (TS↔Move types: the bounds schema + generated ABI)
-slot in as siblings when the frontend lands. `agent/` graduates to a Bun workspace member at
-that point.
+What the run proves: enclave-signed action → on-chain signature verify → adapter allow-list
+→ caps → receipt custodied in the Treasury; a tampered intent (same signature, changed
+amount) is **rejected on-chain**; only the owner withdraws.

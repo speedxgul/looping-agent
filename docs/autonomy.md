@@ -67,7 +67,7 @@ The model can request actions, but policy is enforced locally:
   two-stage deterministic policy gate as the subagent pipeline
 - X posting is gated by `ENABLE_X_POSTING` and only clears its pending task after X
   returns a post id
-- swaps are quote-only in v1 (and off by default on Sui)
+- swaps are quote-only (and off by default on Sui)
 
 Add new capabilities by adding a tool handler in `src/core/toolRegistry.ts`, then
 enforce policy in code before performing any write.

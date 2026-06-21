@@ -82,19 +82,20 @@ bun run account:address
 ## Docker
 
 ```bash
-docker build -t defi-agent-v0 .
-docker run --env-file .env defi-agent-v0
+docker build -t defi-agent .
+docker run --env-file .env defi-agent
 ```
 
 ## Render / Railway / Fly / VPS
 
-Use Bun 1.3+ and run either `bun run run:daemon` or `bun run run:supervisor`. There is
-no web server in v1 — deploy it as a worker/background process, not a web service.
+Use Bun 1.3+ and run either `bun run run:daemon` or `bun run run:supervisor`. The agent
+has no web server — deploy it as a worker/background process. (The Trust Console in `app/`
+is a separate read-only web UI.)
 
 ## Production Notes
 
-- Default to `SUI_NETWORK=testnet` until caps, health guard, and the loop pipeline are
-  verified.
+- The contracts + agent are **live on mainnet**, but start on `SUI_NETWORK=testnet` (or
+  tiny mainnet caps) while you validate your own keys, caps, and risk config.
 - Keep `SUI_ALLOWED_ASSETS` and `SUI_ALLOWED_PROTOCOLS` narrow — the agent only acts on
   explicitly allowlisted markets.
 - The strategy ledger (`data/strategy-ledger.json`) and agent state are local JSON by

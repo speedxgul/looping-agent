@@ -63,7 +63,7 @@ R(x) = supplyApr( u(x) ) + rewardSupplyApr
 `R(x)` is monotonically **decreasing** in `x` — the more you add, the less each marginal
 dollar earns. That convexity is what the allocator exploits.
 
-> **v1 simplification:** `rewardSupplyApr` is treated as fixed. A future version should
+> **Simplification:** `rewardSupplyApr` is treated as fixed. A future version should
 > decay it with the agent's share of the reward pool (incentives dilute as more capital
 > farms them) — noted in `allocation.ts:152`.
 

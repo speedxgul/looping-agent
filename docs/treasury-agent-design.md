@@ -24,8 +24,8 @@
 **I · Concept** — [Why this exists](#1-why-this-exists) · [Mental model](#2-the-mental-model) · [The two claims](#3-the-two-claims) · [Key terms](#4-key-terms)
 **II · Architecture** — [Thin signer](#5-execution-model-the-thin-signer) · [Receipt custody](#6-core-enforcement-receipt-custody) · [Modules & components](#7-modules-and-components) · [Setup](#8-setup-and-registration) · [Runtime loop](#9-the-runtime-loop) · [ActionIntent](#10-the-signed-message-actionintent)
 **III · Security** — [Defense in depth](#11-defense-in-depth) · [Sealed key](#12-the-sealed-key-seal)
-**IV · Build plan** — [M0 spike](#13-m0-the-de-risking-spike) · [Milestones](#14-milestones) · [Lanes](#15-lanes) · [Risk controls](#16-risk-controls) · [Tests](#17-tests)
-**V · Beyond v1** — [Extensibility](#18-extensibility-leverage-and-protocols) · [Non-goals](#19-non-goals) · [Open questions](#20-open-questions) · [Pitch](#21-the-pitch)
+**IV · Controls & tests** — [Risk controls](#13-risk-controls) · [Tests](#14-tests)
+**V · Beyond the core** — [Extensibility](#15-extensibility-leverage-and-protocols) · [Non-goals](#16-non-goals) · [Open questions](#17-open-questions) · [Pitch](#18-the-pitch)
 
 ---
 
@@ -135,8 +135,8 @@ tooling — and **neither the host nor the enclave can move funds alone.**
 > risk was never the on-chain plumbing; it was the size and authority of the enclave.
 
 > **Caveat (see §10):** an attested optimizer only yields a trustworthy *decision*
-> if its inputs are authenticated too. v1 attests the code and hashes inputs for
-> audit; production also authenticates price/state in-enclave. Until then, the host
+> if its inputs are authenticated too. The current build attests the code and hashes
+> inputs for audit; production also authenticates price/state in-enclave. Until then, the host
 > can influence the decision through the data it feeds — but never exceed your
 > on-chain bounds or touch custody.
 
@@ -212,9 +212,9 @@ flowchart TB
 
 When the `Treasury` holds the receipt, the agent can **deposit** but only the
 `OwnerCap` holder can **withdraw**. This is genuinely enforceable for Suilend and
-Scallop. **NAVI is out for v1** — it binds the position to the depositing address
-with no transferable receipt, so the agent's address could withdraw (its
-`AccountCap` model could fix this later; see §18).
+Scallop. **NAVI** has no transferable receipt — it binds the position to the depositing
+address — so it's custodied via its **`AccountCap`** held by the `Treasury` instead
+(see §15), which keeps NAVI non-custodial too.
 
 **The bridge we haven't crossed.** Today `decision.move::execute_decision` verifies
 the signature and nonce, then returns a **raw `Coin<C>` into the PTB:**
@@ -235,7 +235,7 @@ to proving this one path.
 
 | Module | Responsibility | Status |
 |---|---|---|
-| `capability.move` | Treasury · OwnerCap · AgentCap · caps · expiry · revoke · **receipt custody · `verified_supply`** | to build (M1) |
+| `capability.move` | Treasury · OwnerCap · AgentCap · caps · expiry · revoke · **receipt custody · `verified_release`** | **built + tested** |
 | `decision.move` | verify enclave signature over `ActionIntent` · nonce / replay | **built + tested** |
 | `enclave.move` | register enclave `pk` ↔ PCR · signature primitive | **built + tested** |
 
@@ -372,7 +372,7 @@ ActionIntent {
   agent_cap_id: ID,
   nonce: u64,
   expires_at_ms: u64,
-  action_kind: u8,          // v1: supply_usdc | withdraw_to_treasury | emergency_unwind
+  action_kind: u8,          // supply_usdc | withdraw_to_treasury | emergency_unwind
   protocol_id: u8,
   asset_type: vector<u8>,
   amount: u64,
@@ -390,13 +390,13 @@ sign → verify → nonce path. Adopting the full schema is one coordinated chan
 must stay byte-identical across: (1) the Move struct + its BCS order, (2) the
 enclave serializer in `enclave/app/decision.ts`, (3) the boot self-test asserting
 (1) ≡ (2). Do it **once, early, with a fixed test vector** — `action_kind` /
-`protocol_id` / `asset_type` are needed the moment M1 adds `verified_supply`.
+`protocol_id` / `asset_type` are consumed by `verified_supply` / `verified_release`.
 
 **What `input_hash` proves.** Audit linkage — "this signature is bound to *these*
 inputs" — so no later report can claim the agent saw different data. It does **not**
 prove the inputs were correct; a lying host can sign over garbage. Correctness needs
 the enclave to authenticate inputs (verify Pyth attestations / re-derive state
-in-TEE). v1: hash for audit. Production: authenticate in-enclave.
+in-TEE). Today: hash for audit; production authenticates in-enclave.
 
 ---
 
@@ -479,64 +479,19 @@ watch the agent refuse to act.
 
 ---
 
-# Part IV · Build plan
+# Part IV · Controls & tests
 
-## 13. M0: the de-risking spike
+## 13. Risk controls
 
-Before writing `verified_supply`, answer one empirical question:
-
-> Which protocol lets our Move package make the deposit call (cross-package) and end
-> with the `ObligationOwnerCap` / `sCoin` owned by the `Treasury` — without the
-> released coin ever being divertible by the host's PTB?
-
-| Candidate | Receipt | Custody approach |
-|---|---|---|
-| **Suilend** | `ObligationOwnerCap` | Treasury holds the cap. Open-source Move; we already consume its rate curve. |
-| **Scallop** | `sCoin` | Route the `sCoin` to the Treasury, not the agent wallet. Simplest model. |
-
-**Deliverable:** one chosen protocol + the exact deposit/withdraw call shape. NAVI
-excluded (address-bound).
-
-## 14. Milestones
-
-| # | Milestone | Delivers |
-|---|---|---|
-| **M0** | Spike Suilend vs Scallop deposit-and-custody; lock one protocol | de-risks the headline claim |
-| **M1** | `capability.move`: custody the receipt + `verified_supply`; test **"agent can't withdraw to itself"** | receipt-custody core of #1 + #2 |
-| **M2** | Mock `ActionIntent` signer → `decision.move` verify → Submitter PTB → testnet flow (deposit → supply → receipt → revoke) | #2 verified execution, end to end |
-| **M3** | Real Oyster enclave + `register_enclave`; move optimizer in; replace mock signer | #1 can't-swap / can't-extract; attested decision |
-| **M4** | Seal-gated key + weights (`seal_approve` only to the registered PCR) | completes #1: persistent, confidential, fail-closed |
-
-> **Status (2026-06-21):** **M0–M3 complete and proven live on Sui testnet with real
-> Nitro attestation** — the enclave runs on Marlin Oyster, `register_enclave` binds its
-> in-TEE key after on-chain cert-chain + PCR verification, and the enclave both *signs* and
-> *decides* (optimizer in the TEE) actions the chain verifies. M4 (`seal_approve`) is
-> scaffolded + tested; live Seal provisioning and the real Suilend adapter remain. Deploy +
-> attestation runbook: [`deploy-runbook.md`](deploy-runbook.md).
-
-## 15. Lanes
-
-- **Lane A — `move/`:** `verified_supply` + receipt custody; `register_enclave` ↔
-  verifier wiring; `seal_approve` (M4); tests.
-- **Lane B — `agent/`:** split host roles (LLM Planner + Submitter); expose the
-  optimizer (`allocation.ts`) + policy (`policy.ts`) as **pure modules the enclave
-  imports**; route fund actions through the `Treasury`, not `agent.walletAddress`.
-- **Lane C — `enclave/`:** **move the optimizer + bounds into the enclave** (so the
-  *decision* is attested); `ActionIntent` serialization + signer (extend the
-  3-field skeleton to the full schema); deploy to Oyster; **M4: Seal provisioning.**
-- **Joint:** the M0 spike, the `ActionIntent` schema, the deposit-and-custody call.
-
-## 16. Risk controls
-
-- **v1 (required):** USDC-only · protocol allow-list · asset allow-list · per-action
+- **Enforced:** USDC-only · protocol allow-list · asset allow-list · per-action
   cap · rolling-period cap · expiry · nonce/replay · owner revocation · no raw
   transfers · receipt custody · on-chain receipts.
-- **v1.5:** max per-protocol exposure · depeg circuit breaker · protocol pause list
-  · minimum health factor for borrow-capable actions · emergency unwind.
-- **Deferred:** live borrowing · recursive looping · CLMM LP · cross-asset swaps ·
-  NAVI. *(Forward path: §18.)*
+- **Planned:** max per-protocol exposure · depeg circuit breaker · protocol pause
+  list · minimum health factor for borrow-capable actions · emergency unwind.
+- **Deferred:** live borrowing · recursive looping · CLMM LP · cross-asset swaps.
+  *(Forward path: §15.)*
 
-## 17. Tests
+## 14. Tests
 
 - **Move.** create/deposit; supply within cap; reject over per-tx cap, over rolling
   cap, expired, revoked, wrong treasury–cap pair, replayed nonce, wrong signer,
@@ -545,16 +500,15 @@ excluded (address-bound).
 - **Enclave / agent.** canonical intent + policy/input hashes are stable; tampered
   intent fails verification; Planner can't emit an unsupported `action_kind`; LLM
   can't bypass the Validator; mock and enclave signers share one interface.
-- **Integration (testnet).** treasury creation; mock-signed supply; receipt emitted
-  and the Walrus report references its hash; revoke blocks the next action; wrong
-  signer / stale nonce / over-cap all fail; **M4: modified image → Seal denies →
-  agent can't act.**
+- **Integration (mainnet).** treasury creation; attested `verified_supply` across
+  Suilend / NAVI / Scallop; receipt custodied and the Walrus report references its
+  hash; revoke blocks the next action; wrong signer / stale nonce / over-cap all fail.
 
 ---
 
-# Part V · Beyond v1
+# Part V · Beyond the core
 
-## 18. Extensibility: leverage and protocols
+## 15. Extensibility: leverage and protocols
 
 Two questions decide whether this is a one-trick demo or a platform: *can it run
 leveraged strategies?* and *can it add protocols?* **Neither breaks the
@@ -630,42 +584,42 @@ So **NAVI is supportable** via its `AccountCap` sub-account model (needs a spike
 confirm), just not its default flow. Two consequences: the Treasury holds a *set* of
 receipts (dynamic fields), so multi-protocol doesn't break custody; and each adapter
 is a real integration — a cross-package Move call where possible, else the
-PTB-composed-with-final-assertion fallback (§20 Q4).
+PTB-composed-with-final-assertion fallback (§17 Q4).
 
 ### Roadmap
 
 | Capability | Stage | Gating work |
 |---|---|---|
-| Single-protocol supply | **v1** | M0–M3 |
-| Second supply protocol | v1.5 | one more adapter |
-| NAVI | v1.5 | `AccountCap` integration + spike |
-| Looping / leverage | v2 | on-chain health + `verified_loop` + unwind keeper |
-| CLMM LP, cross-asset | v2+ | new receipt types + price-impact bounds |
+| Single-protocol supply | **shipped** | live (Suilend / Scallop) |
+| Multi-protocol supply | **shipped** | per-protocol adapter packages |
+| NAVI | **shipped** | live via `AccountCap` custody |
+| Looping / leverage | planned | on-chain health + `verified_loop` + unwind keeper |
+| CLMM LP, cross-asset | planned | new receipt types + price-impact bounds |
 
-## 19. Non-goals
+## 16. Non-goals
 
-Attested backtesting; borrowing/looping for user funds; multi-protocol templates;
-NAVI; a pooled multi-user share vault; a trust-console UI.
+Attested backtesting; borrowing/looping for user funds; a pooled multi-user share vault.
 
-> Previously a non-goal, now **achieved in v1:** full *on-chain* Nitro cert-chain
+> Previously a non-goal, now **achieved:** full *on-chain* Nitro cert-chain
 > verification. `register_enclave` parses the attestation with Sui's
 > `nitro_attestation::load_nitro_attestation`, which verifies the COSE signature and the
 > cert chain to the AWS Nitro root on-chain (not just off-chain at registration).
 
-## 20. Open questions
+## 17. Open questions
 
-1. **Attestation depth.** v1 off-chain verify + on-chain pubkey; hardened path
+1. **Attestation depth.** Today: off-chain verify + on-chain pubkey; hardened path
    verifies the full cert chain on-chain (schema unchanged either way).
-2. **Vault shape.** Per-user `Treasury<USDC>` (v1) vs. a pooled per-user-share vault.
-3. **First protocol.** Decided by the M0 spike (§13).
+2. **Vault shape.** Per-user `Treasury<USDC>` (today) vs. a pooled per-user-share vault.
+3. **First protocol.** Resolved — Suilend, NAVI (via `AccountCap`), and Scallop all
+   custody via per-protocol adapter packages.
 4. **Deposit composition.** Cross-package Move deposit call vs. a PTB with a final
    on-chain assertion. The cross-package call is preferred — it keeps the coin out
    of host-controlled PTB space.
 5. **Verifier scope.** How much risk-checking Move re-derives from chain state vs.
-   needs enclave-authenticated inputs. v1 hashes for audit; production authenticates
+   needs enclave-authenticated inputs. Today: hashes for audit; production authenticates
    in-enclave.
 
-## 21. The pitch
+## 18. The pitch
 
 - **Verifiable autonomy.** *"Every action is decided and signed by attested
   hardware, re-verified on-chain, and bounded by your mandate. Proof, not trust."*

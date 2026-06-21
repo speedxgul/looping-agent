@@ -31,6 +31,12 @@ export const DOCS: DocEntry[] = [
     file: 'docs/treasury-agent-design.md'
   },
   { slug: 'deployment', title: 'Deployment', group: 'Operations', file: 'docs/deployment.md' },
+  {
+    slug: 'deploy-runbook',
+    title: 'Deploy Runbook (mainnet)',
+    group: 'Operations',
+    file: 'docs/deploy-runbook.md'
+  },
   { slug: 'agent', title: 'Agent Package', group: 'Packages', file: 'agent/README.md' },
   { slug: 'move', title: 'Move Package', group: 'Packages', file: 'move/README.md' },
   { slug: 'enclave', title: 'Enclave', group: 'Packages', file: 'enclave/README.md' }
