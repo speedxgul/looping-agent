@@ -3,7 +3,7 @@
 A non-custodial multi-agent that deploys idle stablecoins under on-chain risk bounds you can
 cryptographically verify. The LLM plans (one main agent + six independent subagents), a
 decision layer runs strategies **inside a TEE** and explains; a deterministic layer moves
-funds. Shared Walrus state and memory.
+funds. Shared Walrus state and memory
 
 ## Highlights
 
