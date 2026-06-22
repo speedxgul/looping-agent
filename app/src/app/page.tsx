@@ -4,20 +4,20 @@ import TopNav from '@/components/TopNav';
 
 const FEATURES = [
   {
+    title: 'TEE-attested decisions',
+    body: 'The optimizer runs and signs every allocation inside a TEE (Nautilus + Marlin Oyster); its key is PCR-bound on-chain. The agent can’t puppet the venue or amount, and a tampered intent is rejected.'
+  },
+  {
+    title: 'Non-custodial & bounded',
+    body: 'Funds live in an on-chain Treasury; the agent holds only a capped, revocable AgentCap and can never withdraw. Per-tx and rolling caps, allowlists, and health-factor gates are enforced in code — never the model.'
+  },
+  {
     title: 'Two decision engines',
-    body: 'A flexible LLM tool-calling agent and a deterministic six-subagent yield-looping pipeline — both bounded by the same policy.'
+    body: 'A flexible LLM tool-calling agent and a deterministic six-subagent yield-looping pipeline — both move funds only through the same policy.'
   },
   {
-    title: 'Deterministic enforcement',
-    body: 'Caps, allowlists, and health-factor gates live in code, never in the model. Every fund move passes the same policy layer.'
-  },
-  {
-    title: 'Verifiable history',
-    body: 'Strategy proposals, plans, and execution receipts are persisted and archived to Walrus for an auditable trail.'
-  },
-  {
-    title: 'Multi-protocol on Sui',
-    body: 'Reads and writes across Suilend, NAVI, and Scallop through one normalized interface with an own-impact-aware optimizer.'
+    title: 'Multi-protocol & auditable',
+    body: 'Reads and writes across Suilend, NAVI, and Scallop via an own-impact-aware optimizer; every proposal, plan, and receipt is archived to Walrus.'
   }
 ];
 
