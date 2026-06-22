@@ -156,6 +156,27 @@ sequenceDiagram
 Deeper diagrams (Seal key-load, the full module map) are in
 [`docs/treasury-agent-design.md`](docs/treasury-agent-design.md).
 
+## Deployed on Sui mainnet
+
+All ids are also in [`deployments/mainnet-v2.env`](deployments/mainnet-v2.env).
+
+**Packages**
+
+- treasury_core: https://suivision.xyz/package/0x2e069f6be4e68b6a533676122754ba9611898a431c1b0240dc4e0cc8d1cde3a4
+- Enclave / Nautilus framework: https://suivision.xyz/package/0x9aa904f2d8e55626f4ba4d3c76fd48fb84f00e86f2bfd558980b1d6268828b8b
+- Scallop adapter: https://suivision.xyz/package/0x308221b0a3f63a6a0cf4350e324a7765d29dc4f9bc4072d25b783ed3f5b20f68
+- NAVI adapter: https://suivision.xyz/package/0x0de89081fb15e9dbce00246448a1e1a698f21fcb723d701f3da2d8c2429621b9
+- Suilend adapter: https://suivision.xyz/package/0x2292d8d0c248a7b0246f33752e411064f88fe8575c959c1e86558436c1f55e45
+
+**Objects**
+
+- DecisionRegistry (adapter allow-list): https://suivision.xyz/object/0x77e41e19e5771984d3dd14f20bcadd8405baf549db995fa5ce8176520e876e29
+- Enclave (attested signer): https://suivision.xyz/object/0x1ee14a68089b59872e66f77d5259e007d5b2a1c92ed93313f7dd99add848d108
+- EnclaveConfig (pinned PCR0/1/2/16): https://suivision.xyz/object/0x46d15bf6bff64adeb9cb4815ade709004c22e16936cfb941eeede562264797c5
+- Treasury (USDC vault): https://suivision.xyz/object/0x7442a82ad30bb67fb4944b0de95a31124b55c896e29f0436ebe3884096eac3aa
+
+Live attested-supply tx: https://suivision.xyz/txblock/C5TAscXkvHhC67b8W26NaAvFWUi5gyg9gXacrZyfs8GG
+
 ## Layout
 
 | Folder | What it is |
