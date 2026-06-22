@@ -329,7 +329,7 @@ sequenceDiagram
     participant Plan as Planner (LLM, host)
     participant Enc as Enclave (strategy + signer)
     participant Sub as Submitter (host)
-    participant Adp as &lt;protocol&gt;_adapter
+    participant Adp as protocol adapter
     participant Dec as core::decision
     participant Cap as core::capability (Treasury)
     participant Pool as Suilend / Scallop / NAVI
@@ -339,22 +339,22 @@ sequenceDiagram
         Enc->>Enc: authenticate inputs · run optimizer · check bounds · build ActionIntent
         Enc->>Enc: sign ActionIntent (secp256k1 key stays in TEE)
         Enc-->>Sub: signed ActionIntent
-        Sub->>Adp: PTB → verified_supply_&lt;protocol&gt;_entry(intent, sig, AgentCap)
-        Adp->>Dec: verified_release&lt;C, W&gt;(witness, registry, treasury, enclave, cap, …intent)
+        Sub->>Adp: PTB → verified_supply_*_entry(intent, sig, AgentCap)
+        Adp->>Dec: verified_release(witness, registry, treasury, enclave, cap, …intent)
         Dec->>Dec: verify enclave sig vs registered pk · consume nonce (replay)
-        Dec->>Dec: witness W == adapter registered for protocol_id (on-chain allow-list)
+        Dec->>Dec: witness == adapter registered for protocol_id (on-chain allow-list)
         Dec->>Cap: bounds check (per-tx · period · expiry · not revoked)
         alt all checks pass
-            Cap-->>Dec: Coin&lt;C&gt; + ReleaseTicket (hot-potato, no abilities)
-            Dec-->>Adp: Coin&lt;C&gt; + ReleaseTicket
-            Note over Adp,Cap: ReleaseTicket has no abilities — the ONLY<br/>way to consume it is to custody a receipt
-            Adp->>Pool: supply Coin&lt;C&gt;
+            Cap-->>Dec: Coin + ReleaseTicket (hot-potato, no abilities)
+            Dec-->>Adp: Coin + ReleaseTicket
+            Note over Adp,Cap: ReleaseTicket has no abilities, so it can only be discharged by custodying a receipt
+            Adp->>Pool: supply Coin
             Pool-->>Adp: receipt (sCoin / AccountCap / ObligationOwnerCap)
-            Adp->>Cap: discharge ticket — custody_new / borrow_for_ticket + discharge_existing
+            Adp->>Cap: discharge ticket via custody_new / borrow_for_ticket + discharge_existing
             Cap->>Cap: CUSTODY receipt as dynamic field of Treasury · emit ActionExecuted
             Cap-->>Sub: receipt event (→ Walrus / X)
         else any check fails (sig · witness · nonce · bounds)
-            Cap-->>Sub: ABORT — funds untouched
+            Cap-->>Sub: ABORT, funds untouched
         end
     end
 ```

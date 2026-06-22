@@ -45,9 +45,12 @@ export default function Mermaid({ code }: { code: string }) {
       } catch {
         if (!cancelled) setError(true);
       } finally {
-        // Remove any orphaned temp node mermaid may append to <body>.
-        document.getElementById(id)?.remove();
-        document.getElementById(`d${id}`)?.remove();
+        // mermaid may leave a measurement node in <body>. Remove ONLY a node that is a
+        // direct child of <body>, never the injected <svg>, which carries this same id but
+        // lives inside our ref. (Removing it by id was blanking every rendered diagram.)
+        for (const orphan of [document.getElementById(id), document.getElementById(`d${id}`)]) {
+          if (orphan && orphan.parentElement === document.body) orphan.remove();
+        }
       }
     }
 

@@ -11,7 +11,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'Treasury Agent — Autonomous Yield on Sui',
+  title: 'HexLiquid Yield — Autonomous Yield on Sui',
   description:
     'An autonomous, non-custodial treasury agent that deploys idle stablecoins into verifiable on-chain yield on Sui. Launch the trust console to watch it work.'
 };

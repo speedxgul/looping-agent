@@ -6,7 +6,7 @@ export * from './docsRegistry';
 
 /**
  * Where the markdown lives. Override with DOCS_DIR (absolute, or relative to app/).
- * Otherwise prefer `app/content/` — the copy `scripts/sync-docs.mjs` syncs in at build,
+ * Otherwise prefer `app/content/`, the copy `scripts/sync-docs.mjs` syncs in at build,
  * so it ships INSIDE the deployed app/ (Vercel only deploys app/). Falls back to the
  * repo root for local monorepo dev, where the docs are read live.
  */

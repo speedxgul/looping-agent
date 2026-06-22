@@ -1,25 +1,7 @@
 import Link from 'next/link';
 import Hero from '@/components/landing/Hero';
+import HowItWorks from '@/components/landing/HowItWorks';
 import TopNav from '@/components/TopNav';
-
-const FEATURES = [
-  {
-    title: 'TEE-attested decisions',
-    body: 'The optimizer runs and signs every allocation inside a TEE (Nautilus + Marlin Oyster); its key is PCR-bound on-chain. The agent can’t puppet the venue or amount, and a tampered intent is rejected.'
-  },
-  {
-    title: 'Non-custodial & bounded',
-    body: 'Funds live in an on-chain Treasury; the agent holds only a capped, revocable AgentCap and can never withdraw. Per-tx and rolling caps, allowlists, and health-factor gates are enforced in code — never the model.'
-  },
-  {
-    title: 'Two decision engines',
-    body: 'A flexible LLM tool-calling agent and a deterministic six-subagent yield-looping pipeline — both move funds only through the same policy.'
-  },
-  {
-    title: 'Multi-protocol & auditable',
-    body: 'Reads and writes across Suilend, NAVI, and Scallop via an own-impact-aware optimizer; every proposal, plan, and receipt is archived to Walrus.'
-  }
-];
 
 const STATS = [
   { label: 'Lending protocols', value: '3' },
@@ -40,22 +22,13 @@ export default function LandingPage() {
             Built to move funds safely
           </h2>
           <p className="mt-4 font-sans text-muted">
-            Autonomous decision-making is separated from protocol access, with all risk enforcement
-            in deterministic code.
+            Every move follows the same path: proposed by the agent, attested in a TEE, verified
+            on-chain, then custodied non-custodially. Decision is separated from access; risk is
+            enforced in deterministic code.
           </p>
         </div>
 
-        <div className="mt-14 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {FEATURES.map((f) => (
-            <div
-              key={f.title}
-              className="rounded-2xl border border-border bg-gradient-to-b from-panel to-panel-2 p-6 transition-colors hover:border-accent/40"
-            >
-              <h3 className="font-sans text-lg font-semibold text-text">{f.title}</h3>
-              <p className="mt-3 font-sans text-sm leading-relaxed text-muted">{f.body}</p>
-            </div>
-          ))}
-        </div>
+        <HowItWorks />
 
         <div className="mt-20 grid grid-cols-2 gap-4 rounded-3xl border border-border bg-panel/40 p-8 sm:grid-cols-4">
           {STATS.map((s) => (
